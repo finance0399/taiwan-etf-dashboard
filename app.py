@@ -41,7 +41,7 @@ def 轉成數字(資料):
     except ValueError:
         return None
 
-        try:
+    try:
         return float(文字)
     except ValueError:
         return None
