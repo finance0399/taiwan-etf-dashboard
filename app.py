@@ -26,18 +26,19 @@ ETF_LIST = {
     "00952": "凱基台灣AI50",
 }
 
-
 def 轉成數字(資料):
     """將證交所回傳的文字轉成數字。"""
-    
     文字 = (
         str(資料 or "")
         .strip()
         .replace(",", "")
         .replace("+", "")
     )
-        
-    if not 文字 or 文字 in ["--", "---"]:
+    if not 文字 or 文字 == "--" or 文字 == "---":
+        return None
+    try:
+        return float(文字)
+    except ValueError:
         return None
 
         try:
