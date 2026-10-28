@@ -465,22 +465,13 @@ def get_etf_series(ticker):
 def load_local_fund_data(file_modified_time=None):
     """
     讀取共同基金淨值 CSV。
-
-    支援兩種格式：
-
-    格式一：
-    date,code,nav
-    2026-01-02,A09012,188.52
-    2026-01-02,A41209,25.31
-
-    格式二：
-    date,A09012,A41209
-    2026-01-02,188.52,25.31
     """
+    empty_data = pd.DataFrame(
+        columns=["date", "code", "nav"]
+    )
+
     if not LOCAL_FUND_FILE.exists():
-        return pd.DataFrame(
-            columns=["date", "code", "nav"]
-        )
+        return empty_data
 
     try:
         data = pd.read_csv(
@@ -493,11 +484,9 @@ def load_local_fund_data(file_modified_time=None):
             encoding="big5",
         )
     except Exception:
-        return pd.DataFrame(
-            columns=["date", "code", "nav"]
-        )
+        return empty_data
 
-   data.columns = [
+    data.columns = [
         str(column).strip()
         for column in data.columns
     ]
@@ -547,11 +536,8 @@ def load_local_fund_data(file_modified_time=None):
             break
 
     if date_column is None:
-        return pd.DataFrame(
-            columns=["date", "code", "nav"]
-        )
+        return empty_data
 
-   # 格式一：date、code、nav
     if code_column is not None and nav_column is not None:
         result = data[
             [date_column, code_column, nav_column]
@@ -559,7 +545,6 @@ def load_local_fund_data(file_modified_time=None):
 
         result.columns = ["date", "code", "nav"]
 
-    # 格式二：date、A09012、A41209
     else:
         value_columns = [
             column
