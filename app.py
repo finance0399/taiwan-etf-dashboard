@@ -635,59 +635,45 @@ def build_dashboard_data():
     建立績效表格與歷史序列。
     """
     modified_time = None
-
-   if LOCAL_FUND_FILE.exists():
+    if LOCAL_FUND_FILE.exists():
         modified_time = LOCAL_FUND_FILE.stat().st_mtime
-
     fund_data = load_local_fund_data(modified_time)
     result_rows = []
     history_series = {}
     source_status = []
-
     for code in DISPLAY_ORDER:
         product = PRODUCTS[code]
-
         if product["type"] == "ETF":
             display_series, performance_series = get_etf_series(
                 product["ticker"]
             )
-
             display_statistics = calculate_performance(
                 display_series
             )
-
             performance_statistics = calculate_performance(
                 performance_series
             )
-
             statistics = performance_statistics.copy()
             statistics["latest"] = display_statistics["latest"]
             statistics["date"] = display_statistics["date"]
-
             history_series[code] = performance_series
-
             if display_series.empty:
                 status = "ETF資料讀取失敗"
             else:
                 status = "Yahoo Finance"
-
         else:
             fund_series = get_fund_series(
                 fund_data,
                 code,
             )
-
-          statistics = calculate_performance(
+            statistics = calculate_performance(
                 fund_series
             )
-
             history_series[code] = fund_series
-
             if fund_series.empty:
                 status = "等待 fund_nav_history.csv"
             else:
                 status = "fund_nav_history.csv"
-
         result_rows.append(
             {
                 "代號": code,
@@ -704,7 +690,6 @@ def build_dashboard_data():
                 "3Y": statistics["3Y"],
             }
         )
-
         source_status.append(
             {
                 "代號": code,
@@ -712,10 +697,8 @@ def build_dashboard_data():
                 "資料來源": status,
             }
         )
-
     result_df = pd.DataFrame(result_rows)
     source_df = pd.DataFrame(source_status)
-
     return result_df, history_series, source_df
 
 
