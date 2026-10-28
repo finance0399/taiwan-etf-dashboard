@@ -256,7 +256,7 @@ def safe_return(latest_value, base_value):
     if float(base_value) == 0:
         return None
 
-   return (float(latest_value) / float(base_value) - 1) * 100
+    return (float(latest_value) / float(base_value) - 1) * 100
 
 
 def get_value_on_or_before(series, target_date):
