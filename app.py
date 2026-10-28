@@ -1443,7 +1443,6 @@ st.markdown(
     <div class="footer-note">
         最後更新時間：
         {datetime.now().strftime("%Y/%m/%d %H:%M:%S")}
-        <br>
         本網站資訊僅供資料整理與績效比較，不構成任何投資建議。
         實際淨值、成交價格與報酬率仍應以證券交易所、
         基金公司及基金公開資訊來源為準。
