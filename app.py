@@ -1709,9 +1709,7 @@ else:
 # 資料抓取診斷
 # ============================================================
 
-with st.expander(
-    "🔧 資料抓取診斷"
-):
+with st.expander("🔧 資料抓取診斷"):
 
     for item in diagnostics:
 
@@ -1720,80 +1718,65 @@ with st.expander(
         )
 
         st.write(
-            "線上取得 "
-            f"{item['online_rows']} 筆，"
-            "CSV 取得 "
-            f"{item['csv_rows']} 筆。"
+            f"線上取得 {item['online_rows']} 筆，"
+            f"CSV 取得 {item['csv_rows']} 筆。"
         )
 
-        if (
-            item["first_date"]
-            is not None
-        ):
+        if item["first_date"] is not None:
 
-            first_date_text = (
-                item["first_date"]
-                .strftime("%Y/%m/%d")
-            )
+            first_date_text = item[
+                "first_date"
+            ].strftime("%Y/%m/%d")
 
-            last_date_text = (
-                item["last_date"]
-                .strftime("%Y/%m/%d")
-            )
+            last_date_text = item[
+                "last_date"
+            ].strftime("%Y/%m/%d")
 
             st.write(
-                "線上資料期間："
-                f"{first_date_text}"
-                " 至 "
-                f"{last_date_text}"
+                f"線上資料期間：{first_date_text} "
+                f"至 {last_date_text}"
             )
 
-        if item[
-            "successful_urls"
-        ]:
+        if item["successful_urls"]:
 
             st.write(
                 "成功取得資料的來源："
             )
 
-            for source_url in item[
-                "successful_urls"
-            ]:
+            for source_url in item["successful_urls"]:
 
                 st.code(
                     source_url,
                     language="text",
                 )
 
-        if item["errors"] and not item["successful_urls"]:
+        if (
+            item["errors"]
+            and not item["successful_urls"]
+        ):
 
             st.write(
                 "所有線上來源皆無法取得："
-           )
+            )
 
-           for error_message in item["errors"]:
+            for error_message in item["errors"]:
 
                 st.code(
                     error_message,
                     language="text",
-           )
+                )
 
-        elif item["errors"] and item["successful_urls"]:
+        elif (
+            item["errors"]
+            and item["successful_urls"]
+        ):
 
-          st.caption(
-              "部分備援來源無法連線，但已有其他來源成功取得資料，"
-              "不影響目前顯示結果。"
-    )
-
-
-# ============================================================
-# CSV 格式
-# ============================================================
-
-with st.expander(
-    "📁 fund_nav_history.csv 格式與長期資料說明"
-):
-
+            st.caption(
+                "部分備援來源無法連線，"
+                "但已有其他來源成功取得資料，"
+                "不影響目前顯示結果。"
+            )
+            
     st.write(
         "fund_nav_history.csv "
         "必須與 app.py 放在 GitHub "
