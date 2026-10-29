@@ -44,7 +44,6 @@ PRODUCTS = {
         "code": "A09012",
         "urls": [
             "https://www.ezmoney.com.tw/funds/value/36",
-            "https://www.yesfund.com.tw/w/wr/wr02_ACPS10-6401.djhtm",
             "https://fund.hncb.com.tw/w/wr/wr02_ACPS10-009007.djhtm",
             "https://www.moneydj.com/funddj/ya/yp010000.djhtm?a=ACPS10",
         ],
@@ -1766,20 +1765,25 @@ with st.expander(
                     language="text",
                 )
 
-        if item["errors"]:
+        if item["errors"] and not item["successful_urls"]:
 
             st.write(
-                "部分來源錯誤："
-            )
+                "所有線上來源皆無法取得："
+           )
 
-            for error_message in item[
-                "errors"
-            ]:
+           for error_message in item["errors"]:
 
                 st.code(
                     error_message,
                     language="text",
-                )
+           )
+
+        elif item["errors"] and item["successful_urls"]:
+
+          st.caption(
+              "部分備援來源無法連線，但已有其他來源成功取得資料，"
+              "不影響目前顯示結果。"
+    )
 
 
 # ============================================================
