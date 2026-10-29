@@ -1192,7 +1192,7 @@ for index, (
             product_info["urls"]
         )
 
-    = merge_histories(
+        history = merge_histories(
             local_history,
             online_history,
         )
