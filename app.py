@@ -1,432 +1,308 @@
-from datetime import datetime
-from pathlib import Path
-
-import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
-import yfinance as yf
+import pandas as pd
+import numpy as np
+import requests
+from pathlib import Path
+from datetime import date, datetime, timedelta
 
 
 # ============================================================
-# 1. 網頁基本設定
+# 基本設定
 # ============================================================
 
 st.set_page_config(
-    page_title="台灣基金績效比較",
+    page_title="台灣 ETF 及共同基金績效比較",
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="expanded",
+)
+
+st.title("📊 台灣 ETF 及共同基金績效比較")
+
+st.caption(
+    "比較 ETF 與共同基金於指定日期的淨值／收盤價及 Daily、MTD、YTD、1Y、2Y、3Y 績效。"
 )
 
 
 # ============================================================
-# 2. 商品基本資料
+# 商品設定
 # ============================================================
 
 PRODUCTS = {
     "00981A": {
-        "name": "統一台股增長主動式ETF基金",
+        "name": "00981A 統一台股增長主動式ETF",
         "type": "ETF",
-        "group": "統一系列",
-        "ticker": "00981A.TW",
+        "code": "00981A",
     },
     "A09012": {
         "name": "統一奔騰基金",
-        "type": "共同基金",
-        "group": "統一系列",
-        "ticker": None,
+        "type": "FUND",
+        "code": "A09012",
     },
     "00407A": {
-        "name": "凱基台灣主動式ETF基金",
+        "name": "00407A 凱基台灣主動式ETF",
         "type": "ETF",
-        "group": "凱基系列",
-        "ticker": "00407A.TW",
+        "code": "00407A",
     },
     "A41209": {
         "name": "凱基台灣精五門基金",
-        "type": "共同基金",
-        "group": "凱基系列",
-        "ticker": None,
+        "type": "FUND",
+        "code": "A41209",
     },
     "009816": {
-        "name": "凱基台灣TOP 50 ETF基金",
+        "name": "009816 凱基台灣TOP 50 ETF",
         "type": "ETF",
-        "group": "凱基系列",
-        "ticker": "009816.TW",
+        "code": "009816",
     },
     "0050": {
-        "name": "元大台灣50",
+        "name": "0050 元大台灣50",
         "type": "ETF",
-        "group": "市場基準",
-        "ticker": "0050.TW",
+        "code": "0050",
     },
 }
 
-DISPLAY_ORDER = [
-    "00981A",
-    "A09012",
-    "00407A",
-    "A41209",
-    "009816",
-    "0050",
-]
+
+# ============================================================
+# MoneyDJ 查詢網址
+# ============================================================
+
+MONEYDJ_URL = "https://www.moneydj.com/funddj/ya/navfastpage.djhtm"
+
+
+# ============================================================
+# 共用工具
+# ============================================================
+
+def safe_float(value):
+    try:
+        if value is None:
+            return np.nan
+
+        text = str(value).strip().replace(",", "")
+
+        if text in ["", "--", "---", "None", "nan", "NaN"]:
+            return np.nan
+
+        return float(text)
+
+    except Exception:
+        return np.nan
+
+
+def clean_date(value):
+    try:
+        return pd.to_datetime(value).normalize()
+    except Exception:
+        return pd.NaT
+
+
+def pct_change(current, previous):
+    if pd.isna(current) or pd.isna(previous):
+        return np.nan
+
+    if previous == 0:
+        return np.nan
+
+    return (current / previous - 1) * 100
+
+
+def format_number(value):
+    if pd.isna(value):
+        return "-"
+
+    return f"{value:,.4f}".rstrip("0").rstrip(".")
+
+
+def format_pct(value):
+    if pd.isna(value):
+        return "-"
+
+    return f"{value:+.2f}%"
+
+
+# ============================================================
+# 台灣證交所 ETF 歷史資料
+# ============================================================
+
+@st.cache_data(ttl=3600)
+def fetch_twse_month(stock_code, year, month):
+    """
+    從 TWSE STOCK_DAY API 取得單月交易資料。
+    """
+
+    url = "https://www.twse.com.tw/exchangeReport/STOCK_DAY"
+
+    params = {
+        "response": "json",
+        "date": f"{year}{month:02d}01",
+        "stockNo": stock_code,
+    }
+
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+    }
+
+    try:
+        response = requests.get(
+            url,
+            params=params,
+            headers=headers,
+            timeout=12,
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        if "data" not in data:
+            return pd.DataFrame(columns=["date", "nav"])
+
+        records = []
+
+        for row in data["data"]:
+            if len(row) < 7:
+                continue
+
+            roc_date = str(row[0])
+
+            try:
+                roc_year, mm, dd = roc_date.split("/")
+                year_ad = int(roc_year) + 1911
+
+                trade_date = pd.Timestamp(
+                    year=year_ad,
+                    month=int(mm),
+                    day=int(dd),
+                )
+
+                close_price = safe_float(row[6])
+
+                if pd.notna(close_price):
+                    records.append(
+                        {
+                            "date": trade_date,
+                            "nav": close_price,
+                        }
+                    )
+
+            except Exception:
+                continue
+
+        if not records:
+            return pd.DataFrame(columns=["date", "nav"])
+
+        df = pd.DataFrame(records)
+
+        df["date"] = pd.to_datetime(df["date"])
+        df["nav"] = pd.to_numeric(df["nav"], errors="coerce")
+
+        df = df.dropna(subset=["date", "nav"])
+        df = df.sort_values("date")
+        df = df.drop_duplicates(subset=["date"], keep="last")
+
+        return df
+
+    except Exception:
+        return pd.DataFrame(columns=["date", "nav"])
+
+
+def month_iterator(start_date, end_date):
+    current = pd.Timestamp(
+        year=start_date.year,
+        month=start_date.month,
+        day=1,
+    )
+
+    end_month = pd.Timestamp(
+        year=end_date.year,
+        month=end_date.month,
+        day=1,
+    )
+
+    while current <= end_month:
+        yield current.year, current.month
+        current = current + pd.offsets.MonthBegin(1)
+
+
+@st.cache_data(ttl=3600)
+def fetch_etf_history(stock_code, end_date):
+    """
+    為了計算 3Y，往前抓約 3 年 + 緩衝期間。
+    """
+
+    end_date = pd.Timestamp(end_date)
+
+    start_date = end_date - pd.DateOffset(
+        years=3,
+        months=2,
+    )
+
+    frames = []
+
+    for year, month in month_iterator(start_date, end_date):
+        temp = fetch_twse_month(
+            stock_code,
+            year,
+            month,
+        )
+
+        if not temp.empty:
+            frames.append(temp)
+
+    if not frames:
+        return pd.DataFrame(columns=["date", "nav"])
+
+    result = pd.concat(
+        frames,
+        ignore_index=True,
+    )
+
+    result["date"] = pd.to_datetime(result["date"])
+    result["nav"] = pd.to_numeric(
+        result["nav"],
+        errors="coerce",
+    )
+
+    result = result.dropna(
+        subset=["date", "nav"]
+    )
+
+    result = result[
+        result["date"] <= end_date
+    ]
+
+    result = result.sort_values("date")
+
+    result = result.drop_duplicates(
+        subset=["date"],
+        keep="last",
+    )
+
+    return result.reset_index(drop=True)
+
+
+# ============================================================
+# 共同基金 CSV
+# ============================================================
 
 LOCAL_FUND_FILE = Path("fund_nav_history.csv")
 
 
-# ============================================================
-# 3. 網頁樣式
-# ============================================================
-
-st.markdown(
+@st.cache_data(ttl=300)
+def load_fund_history():
     """
-    <style>
-    .stApp {
-        background-color: #f5f7fa;
-    }
+    支援常見 CSV 欄位格式：
 
-    .block-container {
-        max-width: 1500px;
-        padding-top: 1.5rem;
-        padding-bottom: 3rem;
-    }
+    date,code,name,nav
 
-    .dashboard-header {
-        padding: 22px 26px;
-        margin-bottom: 18px;
-        border-radius: 16px;
-        color: white;
-        background: linear-gradient(
-            135deg,
-            #0b3c5d,
-            #176b87,
-            #64ccc5
-        );
-    }
+    或：
 
-    .dashboard-header h1 {
-        margin: 0;
-        font-size: 32px;
-    }
-
-    .dashboard-header p {
-        margin-top: 8px;
-        margin-bottom: 0;
-    }
-
-    div[data-testid="stDataFrame"] {
-        border: 1px solid #e4e9ef;
-        border-radius: 12px;
-        overflow: hidden;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-
-# ============================================================
-# 4. 資料處理函式
-# ============================================================
-
-def clean_series(series):
-    """清理價格或淨值序列。"""
-
-    if series is None or len(series) == 0:
-        return pd.Series(dtype=float)
-
-    result = pd.to_numeric(
-        series,
-        errors="coerce",
-    ).dropna()
-
-    if result.empty:
-        return pd.Series(dtype=float)
-
-    date_index = pd.DatetimeIndex(result.index)
-
-    if date_index.tz is not None:
-        date_index = date_index.tz_localize(None)
-
-    result.index = date_index.normalize()
-
-    result = result[
-        ~result.index.duplicated(keep="last")
-    ]
-
-    return result.sort_index()
-
-
-def get_value_on_or_before(series, target_date):
-    """取得指定日期或之前最近一筆有效資料。"""
-
-    if series is None or series.empty:
-        return None
-
-    target_date = pd.Timestamp(
-        target_date
-    ).normalize()
-
-    available = series.loc[
-        series.index <= target_date
-    ]
-
-    if available.empty:
-        return None
-
-    return float(available.iloc[-1])
-
-
-def calculate_return(latest_value, base_value):
-    """計算報酬率。"""
-
-    if latest_value is None or base_value is None:
-        return None
-
-    if pd.isna(latest_value) or pd.isna(base_value):
-        return None
-
-    if float(base_value) == 0:
-        return None
-
-    return (
-        float(latest_value) / float(base_value) - 1
-    ) * 100
-
-
-def calculate_performance(series):
-    """計算最新值與各期間報酬率。"""
-
-    series = clean_series(series)
-
-    empty_result = {
-        "latest": None,
-        "date": None,
-        "Daily": None,
-        "MTD": None,
-        "YTD": None,
-        "1Y": None,
-        "2Y": None,
-        "3Y": None,
-    }
-
-    if series.empty:
-        return empty_result
-
-    latest_value = float(series.iloc[-1])
-    latest_date = pd.Timestamp(series.index[-1])
-
-    previous_value = None
-
-    if len(series) >= 2:
-        previous_value = float(series.iloc[-2])
-
-    month_start = latest_date.replace(day=1)
-
-    previous_month_end = (
-        month_start - pd.Timedelta(days=1)
-    )
-
-    year_start = pd.Timestamp(
-        year=latest_date.year,
-        month=1,
-        day=1,
-    )
-
-    previous_year_end = (
-        year_start - pd.Timedelta(days=1)
-    )
-
-    month_base = get_value_on_or_before(
-        series,
-        previous_month_end,
-    )
-
-    year_base = get_value_on_or_before(
-        series,
-        previous_year_end,
-    )
-
-    one_year_base = get_value_on_or_before(
-        series,
-        latest_date - pd.DateOffset(years=1),
-    )
-
-    two_year_base = get_value_on_or_before(
-        series,
-        latest_date - pd.DateOffset(years=2),
-    )
-
-    three_year_base = get_value_on_or_before(
-        series,
-        latest_date - pd.DateOffset(years=3),
-    )
-
-    return {
-        "latest": latest_value,
-        "date": latest_date,
-        "Daily": calculate_return(
-            latest_value,
-            previous_value,
-        ),
-        "MTD": calculate_return(
-            latest_value,
-            month_base,
-        ),
-        "YTD": calculate_return(
-            latest_value,
-            year_base,
-        ),
-        "1Y": calculate_return(
-            latest_value,
-            one_year_base,
-        ),
-        "2Y": calculate_return(
-            latest_value,
-            two_year_base,
-        ),
-        "3Y": calculate_return(
-            latest_value,
-            three_year_base,
-        ),
-    }
-
-
-def format_nav(value):
-    """格式化最新淨值或價格。"""
-
-    if value is None or pd.isna(value):
-        return "無資料"
-
-    return f"{float(value):,.2f}"
-
-
-def format_return(value):
-    """格式化報酬率。"""
-
-    if value is None or pd.isna(value):
-        return "-"
-
-    value = float(value)
-
-    if value > 0:
-        return f"+{value:.2f}%"
-
-    return f"{value:.2f}%"
-
-
-def performance_style(value):
-    """正報酬顯示紅色，負報酬顯示綠色。"""
-
-    if not isinstance(value, str):
-        return ""
-
-    if value.startswith("+"):
-        return (
-            "color: #d32f2f;"
-            "font-weight: 700;"
-            "background-color: #fff5f5;"
-        )
-
-    if value.startswith("-") and value != "-":
-        return (
-            "color: #138a50;"
-            "font-weight: 700;"
-            "background-color: #f1fbf5;"
-        )
-
-    return "color: #667085; font-weight: 600;"
-
-
-# ============================================================
-# 5. ETF 資料
-# ============================================================
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def download_etf_data(ticker):
-    """從 Yahoo Finance 下載 ETF 歷史價格。"""
-
-    try:
-        data = yf.download(
-            ticker,
-            period="5y",
-            interval="1d",
-            auto_adjust=False,
-            progress=False,
-            threads=False,
-        )
-
-        if data is None or data.empty:
-            return pd.DataFrame()
-
-        if isinstance(data.columns, pd.MultiIndex):
-            data.columns = (
-                data.columns.get_level_values(0)
-            )
-
-        date_index = pd.DatetimeIndex(data.index)
-
-        if date_index.tz is not None:
-            date_index = date_index.tz_localize(None)
-
-        data.index = date_index.normalize()
-
-        data = data[
-            ~data.index.duplicated(keep="last")
-        ]
-
-        return data.sort_index()
-
-    except Exception:
-        return pd.DataFrame()
-
-
-def get_etf_series(ticker):
-    """取得 ETF 收盤價與績效計算序列。"""
-
-    data = download_etf_data(ticker)
-
-    if data.empty:
-        return (
-            pd.Series(dtype=float),
-            pd.Series(dtype=float),
-        )
-
-    close_series = pd.Series(dtype=float)
-    performance_series = pd.Series(dtype=float)
-
-    if "Close" in data.columns:
-        close_series = clean_series(
-            data["Close"]
-        )
-
-    if "Adj Close" in data.columns:
-        performance_series = clean_series(
-            data["Adj Close"]
-        )
-
-    if performance_series.empty:
-        performance_series = close_series.copy()
-
-    return close_series, performance_series
-
-
-# ============================================================
-# 6. 共同基金 CSV 資料
-# ============================================================
-
-@st.cache_data(ttl=300, show_spinner=False)
-def load_fund_data(file_modified_time=None):
-    """讀取 fund_nav_history.csv。"""
-
-    del file_modified_time
-
-    empty_data = pd.DataFrame(
-        columns=["date", "code", "nav"]
-    )
+    日期,基金代碼,基金名稱,淨值
+    """
 
     if not LOCAL_FUND_FILE.exists():
-        return empty_data
+        return pd.DataFrame(
+            columns=["date", "code", "name", "nav"]
+        )
 
     try:
         data = pd.read_csv(
@@ -435,475 +311,473 @@ def load_fund_data(file_modified_time=None):
         )
 
     except UnicodeDecodeError:
-        data = pd.read_csv(
-            LOCAL_FUND_FILE,
-            encoding="big5",
-        )
+        try:
+            data = pd.read_csv(
+                LOCAL_FUND_FILE,
+                encoding="big5",
+            )
+
+        except Exception:
+            return pd.DataFrame(
+                columns=["date", "code", "name", "nav"]
+            )
 
     except Exception:
-        return empty_data
+        return pd.DataFrame(
+            columns=["date", "code", "name", "nav"]
+        )
 
+    # 移除欄位名稱前後空白
     data.columns = [
-        str(column).strip().lower()
-        for column in data.columns
+        str(col).strip()
+        for col in data.columns
     ]
 
-    required_columns = {
-        "date",
-        "code",
-        "nav",
+    rename_map = {
+        "日期": "date",
+        "Date": "date",
+        "DATE": "date",
+
+        "基金代碼": "code",
+        "代碼": "code",
+        "Code": "code",
+        "CODE": "code",
+
+        "基金名稱": "name",
+        "名稱": "name",
+        "Name": "name",
+        "NAME": "name",
+
+        "淨值": "nav",
+        "NAV": "nav",
+        "Nav": "nav",
     }
 
-    if not required_columns.issubset(data.columns):
-        return empty_data
+    data = data.rename(
+        columns=rename_map
+    )
 
-    result = data[
-        ["date", "code", "nav"]
-    ].copy()
+    required = ["date", "code", "nav"]
 
-    result["date"] = pd.to_datetime(
-        result["date"],
+    for col in required:
+        if col not in data.columns:
+            return pd.DataFrame(
+                columns=["date", "code", "name", "nav"]
+            )
+
+    if "name" not in data.columns:
+        data["name"] = ""
+
+    data["date"] = pd.to_datetime(
+        data["date"],
         errors="coerce",
     )
 
-    result["code"] = (
-        result["code"]
+    data["code"] = (
+        data["code"]
         .astype(str)
         .str.strip()
-        .str.upper()
     )
 
-    result["nav"] = (
-        result["nav"]
+    data["name"] = (
+        data["name"]
         .astype(str)
-        .str.replace(",", "", regex=False)
+        .str.strip()
     )
 
-    result["nav"] = pd.to_numeric(
-        result["nav"],
+    data["nav"] = pd.to_numeric(
+        data["nav"]
+        .astype(str)
+        .str.replace(",", "", regex=False),
         errors="coerce",
     )
 
-    result = result.dropna(
-        subset=["date", "code", "nav"]
+    data = data.dropna(
+        subset=["date", "nav"]
     )
 
-    result = result[
-        result["code"].isin(
-            ["A09012", "A41209"]
-        )
-    ]
-
-    result = result.sort_values(
+    data = data.sort_values(
         ["code", "date"]
     )
 
-    result = result.drop_duplicates(
+    data = data.drop_duplicates(
         subset=["code", "date"],
         keep="last",
     )
 
-    return result
+    return data.reset_index(drop=True)
 
 
-def get_fund_series(fund_data, code):
-    """取得指定共同基金的淨值序列。"""
+def get_fund_history(code, fund_name):
+    data = load_fund_history()
 
-    if fund_data.empty:
-        return pd.Series(dtype=float)
+    if data.empty:
+        return pd.DataFrame(
+            columns=["date", "nav"]
+        )
 
-    selected = fund_data.loc[
-        fund_data["code"] == code,
-        ["date", "nav"],
+    # 優先基金代碼
+    temp = data[
+        data["code"] == code
     ].copy()
 
-    if selected.empty:
-        return pd.Series(dtype=float)
+    # 如果代碼找不到，再嘗試基金名稱
+    if temp.empty and "name" in data.columns:
+        temp = data[
+            data["name"].str.contains(
+                fund_name,
+                na=False,
+                regex=False,
+            )
+        ].copy()
 
-    selected = selected.set_index("date")
-
-    return clean_series(selected["nav"])
-
-
-# ============================================================
-# 7. 建立儀表板資料
-# ============================================================
-
-def build_dashboard_data():
-    """建立所有商品的績效資料。"""
-
-    modified_time = None
-
-    if LOCAL_FUND_FILE.exists():
-        modified_time = (
-            LOCAL_FUND_FILE.stat().st_mtime
+    if temp.empty:
+        return pd.DataFrame(
+            columns=["date", "nav"]
         )
 
-    fund_data = load_fund_data(modified_time)
-
-    result_rows = []
-    history_series = {}
-    source_status = []
-
-    for code in DISPLAY_ORDER:
-        product = PRODUCTS[code]
-
-        if product["type"] == "ETF":
-            display_series, performance_series = (
-                get_etf_series(product["ticker"])
-            )
-
-            display_statistics = (
-                calculate_performance(display_series)
-            )
-
-            statistics = calculate_performance(
-                performance_series
-            )
-
-            statistics["latest"] = (
-                display_statistics["latest"]
-            )
-
-            statistics["date"] = (
-                display_statistics["date"]
-            )
-
-            history_series[code] = (
-                performance_series
-            )
-
-            if display_series.empty:
-                status = "ETF資料讀取失敗"
-            else:
-                status = "Yahoo Finance"
-
-        else:
-            fund_series = get_fund_series(
-                fund_data,
-                code,
-            )
-
-            statistics = calculate_performance(
-                fund_series
-            )
-
-            history_series[code] = fund_series
-
-            if fund_series.empty:
-                status = "等待基金淨值資料"
-            else:
-                status = "fund_nav_history.csv"
-
-        result_rows.append(
-            {
-                "代號": code,
-                "基金名稱": product["name"],
-                "類型": product["type"],
-                "系列": product["group"],
-                "最新淨值": statistics["latest"],
-                "資料日期": statistics["date"],
-                "Daily": statistics["Daily"],
-                "MTD": statistics["MTD"],
-                "YTD": statistics["YTD"],
-                "1Y": statistics["1Y"],
-                "2Y": statistics["2Y"],
-                "3Y": statistics["3Y"],
-            }
-        )
-
-        source_status.append(
-            {
-                "代號": code,
-                "基金名稱": product["name"],
-                "資料來源": status,
-            }
-        )
-
-    result_df = pd.DataFrame(result_rows)
-    source_df = pd.DataFrame(source_status)
-
-    return (
-        result_df,
-        history_series,
-        source_df,
-    )
-
-
-# ============================================================
-# 8. 走勢圖
-# ============================================================
-
-def normalize_series(series, period_name):
-    """將所選期間第一筆資料設定為100。"""
-
-    series = clean_series(series)
-
-    if series.empty:
-        return pd.Series(dtype=float)
-
-    end_date = pd.Timestamp(
-        series.index[-1]
-    ).normalize()
-
-    period_start_dates = {
-        "1M": end_date - pd.DateOffset(months=1),
-        "3M": end_date - pd.DateOffset(months=3),
-        "6M": end_date - pd.DateOffset(months=6),
-        "YTD": pd.Timestamp(
-            year=end_date.year,
-            month=1,
-            day=1,
-        ),
-        "1Y": end_date - pd.DateOffset(years=1),
-        "2Y": end_date - pd.DateOffset(years=2),
-        "3Y": end_date - pd.DateOffset(years=3),
-    }
-
-    start_date = period_start_dates.get(
-        period_name,
-        series.index[0],
-    )
-
-    selected = series.loc[
-        series.index >= start_date
+    temp = temp[
+        ["date", "nav"]
     ].copy()
 
-    if selected.empty:
-        return pd.Series(dtype=float)
+    temp = temp.sort_values("date")
 
-    first_value = float(selected.iloc[0])
-
-    if first_value == 0:
-        return pd.Series(dtype=float)
-
-    return selected / first_value * 100
+    return temp.reset_index(drop=True)
 
 
-def build_performance_chart(
-    selected_codes,
-    history_series,
-    period_name,
-):
-    """建立績效走勢圖。"""
+# ============================================================
+# 找指定日期以前最近一筆資料
+# ============================================================
 
-    colors = {
-        "00981A": "#e53935",
-        "A09012": "#fb8c00",
-        "00407A": "#1565c0",
-        "A41209": "#00acc1",
-        "009816": "#7b1fa2",
-        "0050": "#546e7a",
+def get_value_on_or_before(history, target_date):
+    if history.empty:
+        return None, np.nan
+
+    target_date = pd.Timestamp(target_date)
+
+    temp = history[
+        history["date"] <= target_date
+    ].copy()
+
+    if temp.empty:
+        return None, np.nan
+
+    row = temp.iloc[-1]
+
+    return row["date"], row["nav"]
+
+
+def get_previous_value(history, current_date):
+    temp = history[
+        history["date"] < current_date
+    ]
+
+    if temp.empty:
+        return None, np.nan
+
+    row = temp.iloc[-1]
+
+    return row["date"], row["nav"]
+
+
+# ============================================================
+# 績效計算
+# ============================================================
+
+def calculate_performance(history, selected_date):
+    if history.empty:
+        return None
+
+    history = history.copy()
+
+    history["date"] = pd.to_datetime(
+        history["date"]
+    )
+
+    history["nav"] = pd.to_numeric(
+        history["nav"],
+        errors="coerce",
+    )
+
+    history = history.dropna(
+        subset=["date", "nav"]
+    )
+
+    history = history.sort_values("date")
+
+    selected_date = pd.Timestamp(
+        selected_date
+    )
+
+    current_date, current_nav = (
+        get_value_on_or_before(
+            history,
+            selected_date,
+        )
+    )
+
+    if current_date is None:
+        return None
+
+    # Daily
+    previous_date, previous_nav = (
+        get_previous_value(
+            history,
+            current_date,
+        )
+    )
+
+    daily = pct_change(
+        current_nav,
+        previous_nav,
+    )
+
+    # MTD
+    month_start = current_date.replace(
+        day=1
+    )
+
+    mtd_base_date = (
+        month_start - timedelta(days=1)
+    )
+
+    _, month_base_nav = get_value_on_or_before(
+        history,
+        mtd_base_date,
+    )
+
+    mtd = pct_change(
+        current_nav,
+        month_base_nav,
+    )
+
+    # YTD
+    year_start = pd.Timestamp(
+        year=current_date.year,
+        month=1,
+        day=1,
+    )
+
+    ytd_base_date = (
+        year_start - timedelta(days=1)
+    )
+
+    _, year_base_nav = get_value_on_or_before(
+        history,
+        ytd_base_date,
+    )
+
+    ytd = pct_change(
+        current_nav,
+        year_base_nav,
+    )
+
+    # 1Y / 2Y / 3Y
+    one_year_date = (
+        current_date - pd.DateOffset(years=1)
+    )
+
+    two_year_date = (
+        current_date - pd.DateOffset(years=2)
+    )
+
+    three_year_date = (
+        current_date - pd.DateOffset(years=3)
+    )
+
+    _, one_year_nav = get_value_on_or_before(
+        history,
+        one_year_date,
+    )
+
+    _, two_year_nav = get_value_on_or_before(
+        history,
+        two_year_date,
+    )
+
+    _, three_year_nav = get_value_on_or_before(
+        history,
+        three_year_date,
+    )
+
+    one_year = pct_change(
+        current_nav,
+        one_year_nav,
+    )
+
+    two_year = pct_change(
+        current_nav,
+        two_year_nav,
+    )
+
+    three_year = pct_change(
+        current_nav,
+        three_year_nav,
+    )
+
+    return {
+        "date": current_date,
+        "nav": current_nav,
+        "Daily": daily,
+        "MTD": mtd,
+        "YTD": ytd,
+        "1Y": one_year,
+        "2Y": two_year,
+        "3Y": three_year,
     }
 
-    figure = go.Figure()
-    effective_count = 0
-
-    for code in selected_codes:
-        series = history_series.get(
-            code,
-            pd.Series(dtype=float),
-        )
-
-        normalized = normalize_series(
-            series,
-            period_name,
-        )
-
-        if normalized.empty:
-            continue
-
-        figure.add_trace(
-            go.Scatter(
-                x=normalized.index,
-                y=normalized.values,
-                mode="lines",
-                name=(
-                    f"{code} "
-                    f"{PRODUCTS[code]['name']}"
-                ),
-                line={
-                    "width": 2.5,
-                    "color": colors.get(code),
-                },
-                hovertemplate=(
-                    "%{x|%Y-%m-%d}<br>"
-                    "標準化績效：%{y:.2f}"
-                    "<extra></extra>"
-                ),
-            )
-        )
-
-        effective_count += 1
-
-    figure.update_layout(
-        height=520,
-        paper_bgcolor="white",
-        plot_bgcolor="white",
-        hovermode="x unified",
-        legend={
-            "orientation": "h",
-            "yanchor": "bottom",
-            "y": 1.02,
-            "xanchor": "left",
-            "x": 0,
-        },
-        xaxis={
-            "title": "",
-            "showgrid": False,
-        },
-        yaxis={
-            "title": "標準化績效（起始值＝100）",
-            "gridcolor": "#e9edf2",
-            "zeroline": False,
-        },
-    )
-
-    figure.add_hline(
-        y=100,
-        line_width=1,
-        line_dash="dash",
-        line_color="#98a2b3",
-    )
-
-    return figure, effective_count
-
 
 # ============================================================
-# 9. 側邊欄
+# 日期選擇
 # ============================================================
 
-with st.sidebar:
-    st.markdown("## 🔎 篩選條件")
+today = date.today()
 
-    selected_group = st.selectbox(
-        "基金系列",
-        [
-            "全部",
-            "統一系列",
-            "凱基系列",
-            "市場基準",
-        ],
-    )
+selected_date = st.date_input(
+    "📅 選擇查詢日期",
+    value=today,
+    max_value=today,
+)
 
-    selected_type = st.selectbox(
-        "商品類型",
-        [
-            "全部",
-            "ETF",
-            "共同基金",
-        ],
-    )
-
-    st.markdown("---")
-    st.markdown("### 📈 走勢比較")
-
-    chart_codes = st.multiselect(
-        "選擇比較商品",
-        options=DISPLAY_ORDER,
-        default=DISPLAY_ORDER,
-        format_func=lambda code: (
-            f"{code}｜{PRODUCTS[code]['name']}"
-        ),
-    )
-
-    chart_period = st.radio(
-        "比較期間",
-        [
-            "1M",
-            "3M",
-            "6M",
-            "YTD",
-            "1Y",
-            "2Y",
-            "3Y",
-            "全部",
-        ],
-        index=3,
-        horizontal=True,
-    )
-
-    st.markdown("---")
-
-    if st.button(
-        "🔄 重新整理資料",
-        use_container_width=True,
-        type="primary",
-    ):
-        st.cache_data.clear()
-        st.rerun()
-
-
-# ============================================================
-# 10. 網頁標題
-# ============================================================
-
-st.markdown(
-    """
-    <div class="dashboard-header">
-        <h1>📊 台灣基金績效比較 Dashboard</h1>
-        <p>
-            比較主動式ETF、共同基金及0050市場基準，
-            查看 Daily、MTD、YTD 與中長期績效。
-        </p>
-    </div>
-    """,
-    unsafe_allow_html=True,
+st.caption(
+    "若所選日期為假日或當日尚無資料，系統會採用該日期以前最近一個有資料的交易日。"
 )
 
 
 # ============================================================
-# 11. 載入資料
+# 建立結果
 # ============================================================
 
-with st.spinner("正在更新資料，請稍候..."):
-    dashboard_df, history_data, source_df = (
-        build_dashboard_data()
+results = []
+
+progress = st.progress(0)
+
+product_items = list(PRODUCTS.items())
+
+for index, (product_code, info) in enumerate(product_items):
+
+    if info["type"] == "ETF":
+
+        history = fetch_etf_history(
+            info["code"],
+            selected_date,
+        )
+
+        data_source = "TWSE"
+
+    else:
+
+        fund_short_name = info["name"]
+
+        history = get_fund_history(
+            product_code,
+            fund_short_name,
+        )
+
+        data_source = "fund_nav_history.csv"
+
+    performance = calculate_performance(
+        history,
+        selected_date,
+    )
+
+    if performance is None:
+
+        row = {
+            "基金名稱": info["name"],
+            "淨值日期": "-",
+            "最新淨值": np.nan,
+            "Daily": np.nan,
+            "MTD": np.nan,
+            "YTD": np.nan,
+            "1Y": np.nan,
+            "2Y": np.nan,
+            "3Y": np.nan,
+            "資料來源": data_source,
+        }
+
+    else:
+
+        row = {
+            "基金名稱": info["name"],
+            "淨值日期": performance["date"].strftime(
+                "%Y/%m/%d"
+            ),
+            "最新淨值": performance["nav"],
+            "Daily": performance["Daily"],
+            "MTD": performance["MTD"],
+            "YTD": performance["YTD"],
+            "1Y": performance["1Y"],
+            "2Y": performance["2Y"],
+            "3Y": performance["3Y"],
+            "資料來源": data_source,
+        }
+
+    results.append(row)
+
+    progress.progress(
+        (index + 1) / len(product_items)
+    )
+
+progress.empty()
+
+
+# ============================================================
+# 結果 DataFrame
+# ============================================================
+
+result_df = pd.DataFrame(results)
+
+
+# ============================================================
+# 上方資訊
+# ============================================================
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    st.metric(
+        "查詢日期",
+        pd.Timestamp(selected_date).strftime(
+            "%Y/%m/%d"
+        ),
+    )
+
+with col2:
+
+    valid_dates = result_df[
+        result_df["淨值日期"] != "-"
+    ]["淨值日期"]
+
+    if len(valid_dates) > 0:
+        latest_data_date = max(valid_dates)
+    else:
+        latest_data_date = "-"
+
+    st.metric(
+        "目前最新資料日期",
+        latest_data_date,
+    )
+
+with col3:
+    st.metric(
+        "比較商品數",
+        len(result_df),
     )
 
 
 # ============================================================
-# 12. 套用篩選
+# 表格格式
 # ============================================================
 
-filtered_df = dashboard_df.copy()
-
-if selected_group != "全部":
-    filtered_df = filtered_df.loc[
-        filtered_df["系列"] == selected_group
-    ]
-
-if selected_type != "全部":
-    filtered_df = filtered_df.loc[
-        filtered_df["類型"] == selected_type
-    ]
-
-
-# ============================================================
-# 13. 績效總覽
-# ============================================================
-
-st.subheader("基金績效總覽")
-
-display_df = filtered_df[
-    [
-        "代號",
-        "基金名稱",
-        "最新淨值",
-        "Daily",
-        "MTD",
-        "YTD",
-        "1Y",
-        "2Y",
-        "3Y",
-    ]
-].copy()
+display_df = result_df.copy()
 
 display_df["最新淨值"] = (
-    display_df["最新淨值"].apply(format_nav)
+    display_df["最新淨值"]
+    .apply(format_number)
 )
 
-return_columns = [
+performance_columns = [
     "Daily",
     "MTD",
     "YTD",
@@ -912,15 +786,66 @@ return_columns = [
     "3Y",
 ]
 
-for column in return_columns:
+for column in performance_columns:
     display_df[column] = (
-        display_df[column].apply(format_return)
+        display_df[column]
+        .apply(format_pct)
     )
 
-styled_df = display_df.style.map(
-    performance_style,
-    subset=return_columns,
+
+# ============================================================
+# 顏色
+# ============================================================
+
+def performance_color(value):
+    if not isinstance(value, str):
+        return ""
+
+    if value == "-":
+        return ""
+
+    try:
+        number = float(
+            value
+            .replace("%", "")
+            .replace("+", "")
+        )
+
+        # 台灣市場習慣：
+        # 上漲紅色
+        # 下跌綠色
+        if number > 0:
+            return (
+                "color: #d62728; "
+                "font-weight: bold;"
+            )
+
+        if number < 0:
+            return (
+                "color: #138a36; "
+                "font-weight: bold;"
+            )
+
+    except Exception:
+        pass
+
+    return ""
+
+
+styled_df = (
+    display_df.style
+    .map(
+        performance_color,
+        subset=performance_columns,
+    )
 )
+
+
+# ============================================================
+# 顯示主表
+# ============================================================
+
+st.subheader("📈 績效比較")
 
 st.dataframe(
     styled_df,
@@ -928,164 +853,161 @@ st.dataframe(
     hide_index=True,
 )
 
-st.caption(
-    "紅色代表正報酬，綠色代表負報酬；"
-    "「-」表示歷史資料不足。"
-)
-
 
 # ============================================================
-# 14. 下載資料
+# 找不到共同基金資料時顯示提醒
 # ============================================================
 
-download_df = filtered_df.copy()
+missing_funds = []
 
-download_df["資料日期"] = pd.to_datetime(
-    download_df["資料日期"],
-    errors="coerce",
-).dt.strftime("%Y-%m-%d")
+for _, row in result_df.iterrows():
 
-csv_data = download_df.to_csv(
-    index=False,
-    encoding="utf-8-sig",
-)
+    fund_name = row["基金名稱"]
 
-st.download_button(
-    label="⬇️ 下載目前績效表 CSV",
-    data=csv_data,
-    file_name=(
-        f"fund_performance_"
-        f"{datetime.now().strftime('%Y%m%d')}.csv"
-    ),
-    mime="text/csv",
-)
+    if (
+        fund_name in [
+            "統一奔騰基金",
+            "凱基台灣精五門基金",
+        ]
+        and row["淨值日期"] == "-"
+    ):
+        missing_funds.append(
+            fund_name
+        )
 
 
-# ============================================================
-# 15. 績效走勢圖
-# ============================================================
-
-st.subheader("績效走勢比較")
-
-if not chart_codes:
-    st.info("請在左側至少選擇一檔商品。")
-
-else:
-    chart, chart_count = build_performance_chart(
-        selected_codes=chart_codes,
-        history_series=history_data,
-        period_name=chart_period,
+if missing_funds:
+    st.warning(
+        "⚠️ 以下共同基金目前在 "
+        "fund_nav_history.csv 找不到可使用的歷史淨值資料："
+        + "、".join(missing_funds)
     )
 
-    if chart_count == 0:
-        st.warning(
-            "目前沒有足夠資料可繪製走勢圖。"
-        )
 
-    else:
-        st.plotly_chart(
-            chart,
-            use_container_width=True,
-            config={
-                "displayModeBar": True,
-                "displaylogo": False,
+# ============================================================
+# MoneyDJ
+# ============================================================
+
+st.divider()
+
+st.subheader("🔎 共同基金淨值查詢")
+
+st.write(
+    "若共同基金尚未建立歷史資料，可先至 MoneyDJ "
+    "確認最新淨值，再將資料加入 fund_nav_history.csv。"
+)
+
+st.link_button(
+    "開啟 MoneyDJ 基金淨值查詢",
+    MONEYDJ_URL,
+)
+
+
+# ============================================================
+# CSV 格式說明
+# ============================================================
+
+with st.expander(
+    "📁 fund_nav_history.csv 應該怎麼放資料？"
+):
+
+    st.write(
+        "請確認 fund_nav_history.csv "
+        "和 app.py 放在 GitHub Repository 的同一層。"
+    )
+
+    example_df = pd.DataFrame(
+        [
+            {
+                "date": "2026-10-27",
+                "code": "A09012",
+                "name": "統一奔騰基金",
+                "nav": 100.12,
             },
-        )
+            {
+                "date": "2026-10-28",
+                "code": "A09012",
+                "name": "統一奔騰基金",
+                "nav": 101.25,
+            },
+            {
+                "date": "2026-10-27",
+                "code": "A41209",
+                "name": "凱基台灣精五門基金",
+                "nav": 80.15,
+            },
+            {
+                "date": "2026-10-28",
+                "code": "A41209",
+                "name": "凱基台灣精五門基金",
+                "nav": 81.30,
+            },
+        ]
+    )
 
-        st.caption(
-            "所選期間第一筆有效資料設定為100，"
-            "用於比較各商品相對績效。"
-        )
-
-
-# ============================================================
-# 16. 各基金詳細資料
-# ============================================================
-
-st.subheader("各基金詳細資料")
-
-detail_code = st.selectbox(
-    "選擇基金",
-    options=DISPLAY_ORDER,
-    format_func=lambda code: (
-        f"{code}｜{PRODUCTS[code]['name']}"
-    ),
-)
-
-detail_row = dashboard_df.loc[
-    dashboard_df["代號"] == detail_code
-].iloc[0]
-
-col1, col2, col3, col4 = st.columns(4)
-
-col1.metric(
-    "最新淨值",
-    format_nav(detail_row["最新淨值"]),
-)
-
-col2.metric(
-    "Daily",
-    format_return(detail_row["Daily"]),
-)
-
-col3.metric(
-    "MTD",
-    format_return(detail_row["MTD"]),
-)
-
-col4.metric(
-    "YTD",
-    format_return(detail_row["YTD"]),
-)
-
-col5, col6, col7 = st.columns(3)
-
-col5.metric(
-    "1Y",
-    format_return(detail_row["1Y"]),
-)
-
-col6.metric(
-    "2Y",
-    format_return(detail_row["2Y"]),
-)
-
-col7.metric(
-    "3Y",
-    format_return(detail_row["3Y"]),
-)
-
-
-# ============================================================
-# 17. 資料來源狀態
-# ============================================================
-
-with st.expander("查看資料來源與讀取狀態"):
     st.dataframe(
-        source_df,
+        example_df,
         use_container_width=True,
         hide_index=True,
     )
 
-    fund_rows = load_fund_data(
-        LOCAL_FUND_FILE.stat().st_mtime
-        if LOCAL_FUND_FILE.exists()
-        else None
+    st.code(
+        """date,code,name,nav
+2026-10-27,A09012,統一奔騰基金,100.12
+2026-10-28,A09012,統一奔騰基金,101.25
+2026-10-27,A41209,凱基台灣精五門基金,80.15
+2026-10-28,A41209,凱基台灣精五門基金,81.30"""
     )
 
-    if fund_rows.empty:
-        st.warning(
-            "fund_nav_history.csv 目前沒有有效淨值資料，"
-            "因此 A09012 與 A41209 會顯示無資料。"
-        )
+
+# ============================================================
+# 計算方式說明
+# ============================================================
+
+with st.expander(
+    "ℹ️ 績效計算方式"
+):
+
+    st.markdown(
+        """
+**Daily**
+
+目前淨值 ÷ 前一筆淨值 − 1
+
+**MTD**
+
+目前淨值 ÷ 上月底淨值 − 1
+
+**YTD**
+
+目前淨值 ÷ 去年底淨值 − 1
+
+**1Y**
+
+目前淨值 ÷ 一年前最近可取得淨值 − 1
+
+**2Y**
+
+目前淨值 ÷ 兩年前最近可取得淨值 − 1
+
+**3Y**
+
+目前淨值 ÷ 三年前最近可取得淨值 − 1
+"""
+    )
 
 
 # ============================================================
-# 18. 頁尾
+# 資料說明
 # ============================================================
+
+st.divider()
 
 st.caption(
-    f"最後更新時間："
-    f"{datetime.now().strftime('%Y/%m/%d %H:%M:%S')}｜"
-    "本網站資訊僅供資料整理，不構成投資建議。"
+    "資料僅供績效比較與研究用途。ETF 使用市場交易資料；"
+    "共同基金資料以 fund_nav_history.csv 為準。"
+)
+
+st.caption(
+    "共同基金實際淨值仍應以各基金公司正式公告資料為準。"
 )
