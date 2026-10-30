@@ -335,14 +335,35 @@ def fetch_twse_month(
     }
 
     try:
-        response = requests.get(
-            url,
-            params=params,
-            headers=HEADERS,
-            timeout=20,
-        )
+        response = None
+        last_error = None
 
-        response.raise_for_status()
+        for attempt in range(3):
+
+            try:
+                response = requests.get(
+                    url,
+                    params=params,
+                    headers=HEADERS,
+                    timeout=45,
+                )
+
+                response.raise_for_status()
+                break
+
+            except requests.RequestException as error:
+                last_error = error
+                response = None
+
+                if attempt < 2:
+                    import time
+
+                    time.sleep(
+                        2 * (attempt + 1)
+                    )
+
+        if response is None:
+            raise last_error
 
         rows = response.json().get(
             "data",
