@@ -43,14 +43,8 @@ PRODUCTS = {
         "type": "FUND",
         "urls": [
             "https://www.ezmoney.com.tw/funds/value/36",
-            (
-                "https://fund.hncb.com.tw/w/wr/"
-                "wr02_ACPS10-009007.djhtm"
-            ),
-            (
-                "https://www.moneydj.com/funddj/ya/"
-                "yp010000.djhtm?a=ACPS10"
-            ),
+            "https://fund.hncb.com.tw/w/wr/wr02_ACPS10-009007.djhtm",
+            "https://www.moneydj.com/funddj/ya/yp010000.djhtm?a=ACPS10",
         ],
     },
     "00407A": {
@@ -61,18 +55,9 @@ PRODUCTS = {
         "name": "凱基台灣精五門基金",
         "type": "FUND",
         "urls": [
-            (
-                "https://fund.hncb.com.tw/w/wr/"
-                "wr02.djhtm?a=ACKG15-014013"
-            ),
-            (
-                "https://cotabank.moneydj.com/w/wr/"
-                "wr02_ACKG15.djhtm"
-            ),
-            (
-                "https://www.moneydj.com/funddj/ya/"
-                "yp010000.djhtm?a=ACKG15"
-            ),
+            "https://fund.hncb.com.tw/w/wr/wr02.djhtm?a=ACKG15-014013",
+            "https://cotabank.moneydj.com/w/wr/wr02_ACKG15.djhtm",
+            "https://www.moneydj.com/funddj/ya/yp010000.djhtm?a=ACKG15",
         ],
     },
     "009816": {
@@ -104,8 +89,7 @@ PERIOD_COLUMNS = [
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 "
-        "Chrome/130.0.0.0 Safari/537.36"
+        "AppleWebKit/537.36 Chrome/130 Safari/537.36"
     ),
     "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
 }
@@ -129,8 +113,14 @@ ETF_SPLIT_CONFIG = {
 # 共用工具
 # ============================================================
 
+def empty_history():
+    return pd.DataFrame(
+        columns=["date", "nav"]
+    )
+
+
 def safe_float(value):
-    """安全地將文字轉成數字。"""
+    """安全地將資料轉換成數字。"""
 
     try:
         text = str(value).strip()
@@ -159,19 +149,15 @@ def safe_float(value):
 
 
 def normalize_history(data):
-    """統一歷史資料格式。"""
-
-    empty_result = pd.DataFrame(
-        columns=["date", "nav"]
-    )
+    """統一歷史資料欄位與格式。"""
 
     if data is None or data.empty:
-        return empty_result
+        return empty_history()
 
     if not {"date", "nav"}.issubset(
         data.columns
     ):
-        return empty_result
+        return empty_history()
 
     result = data[
         ["date", "nav"]
@@ -199,7 +185,7 @@ def normalize_history(data):
     )
 
     if result.empty:
-        return empty_result
+        return empty_history()
 
     result["date"] = (
         result["date"]
@@ -226,7 +212,7 @@ def normalize_history(data):
 
 def parse_roc_or_ad_date(value):
     """
-    支援以下日期：
+    支援：
     115/10/27
     2026/10/27
     2026-10-27
@@ -269,10 +255,10 @@ def adjust_etf_close_price(
     close_price,
 ):
     """
-    將 ETF 分割前的收盤價換算成分割後基準。
+    將 ETF 分割前價格換算成分割後基準。
 
     0050 在 2025-06-18 進行 1 拆 4，
-    因此該日期以前的原始收盤價除以 4。
+    因此該日期以前的原始價格除以 4。
     """
 
     if pd.isna(trade_date):
@@ -285,11 +271,9 @@ def adjust_etf_close_price(
         close_price
     )
 
-    split_events = (
-        ETF_SPLIT_CONFIG.get(
-            stock_code,
-            [],
-        )
+    split_events = ETF_SPLIT_CONFIG.get(
+        stock_code,
+        [],
     )
 
     for split_event in split_events:
@@ -315,7 +299,7 @@ def pct_change(
     current_value,
     base_value,
 ):
-    """計算百分比變動。"""
+    """計算百分比變化。"""
 
     if pd.isna(current_value):
         return np.nan
@@ -334,8 +318,6 @@ def pct_change(
 
 
 def format_number(value):
-    """顯示淨值。"""
-
     if pd.isna(value):
         return "-"
 
@@ -347,8 +329,6 @@ def format_number(value):
 
 
 def format_pct(value):
-    """顯示百分比。"""
-
     if pd.isna(value):
         return "-"
 
@@ -368,7 +348,7 @@ def fetch_twse_month(
     year,
     month,
 ):
-    """取得 ETF 單月收盤價資料。"""
+    """取得 ETF 單月交易資料。"""
 
     url = (
         "https://www.twse.com.tw/"
@@ -406,11 +386,7 @@ def fetch_twse_month(
                 )
 
     if response is None:
-        return pd.DataFrame(
-            columns=["date", "nav"]
-        )
-
-    records = []
+        return empty_history()
 
     try:
         rows = response.json().get(
@@ -418,48 +394,46 @@ def fetch_twse_month(
             [],
         )
 
-        for row in rows:
-
-            if len(row) < 7:
-                continue
-
-            trade_date = (
-                parse_roc_or_ad_date(
-                    row[0]
-                )
-            )
-
-            close_price = safe_float(
-                row[6]
-            )
-
-            adjusted_close_price = (
-                adjust_etf_close_price(
-                    stock_code=stock_code,
-                    trade_date=trade_date,
-                    close_price=close_price,
-                )
-            )
-
-            if (
-                pd.notna(trade_date)
-                and pd.notna(
-                    adjusted_close_price
-                )
-            ):
-                records.append(
-                    {
-                        "date": trade_date,
-                        "nav": (
-                            adjusted_close_price
-                        ),
-                    }
-                )
-
     except Exception:
-        return pd.DataFrame(
-            columns=["date", "nav"]
+        return empty_history()
+
+    records = []
+
+    for row in rows:
+
+        if len(row) < 7:
+            continue
+
+        trade_date = (
+            parse_roc_or_ad_date(
+                row[0]
+            )
         )
+
+        close_price = safe_float(
+            row[6]
+        )
+
+        adjusted_close_price = (
+            adjust_etf_close_price(
+                stock_code=stock_code,
+                trade_date=trade_date,
+                close_price=close_price,
+            )
+        )
+
+        if (
+            pd.notna(trade_date)
+            and pd.notna(
+                adjusted_close_price
+            )
+        ):
+            records.append(
+                {
+                    "date": trade_date,
+                    "nav": adjusted_close_price,
+                }
+            )
 
     return normalize_history(
         pd.DataFrame(records)
@@ -537,9 +511,7 @@ def fetch_etf_history(
             )
 
     if not frames:
-        return pd.DataFrame(
-            columns=["date", "nav"]
-        )
+        return empty_history()
 
     history = pd.concat(
         frames,
@@ -631,15 +603,11 @@ def load_local_fund_history():
         columns=rename_map
     )
 
-    required_columns = {
+    if not {
         "date",
         "code",
         "nav",
-    }
-
-    if not required_columns.issubset(
-        data.columns
-    ):
+    }.issubset(data.columns):
         return empty_result
 
     if "name" not in data.columns:
@@ -667,15 +635,26 @@ def load_local_fund_history():
     ].apply(safe_float)
 
     data = data.dropna(
-        subset=["date", "nav"]
+        subset=[
+            "date",
+            "code",
+            "nav",
+        ]
     )
+
+    data = data[
+        data["nav"] > 0
+    ]
 
     data = data.sort_values(
         ["code", "date"]
     )
 
     data = data.drop_duplicates(
-        subset=["code", "date"],
+        subset=[
+            "code",
+            "date",
+        ],
         keep="last",
     )
 
@@ -688,14 +667,12 @@ def get_local_history(
     fund_code,
     fund_name,
 ):
-    """從 CSV 取得單一基金歷史資料。"""
+    """取得單一基金的 CSV 歷史資料。"""
 
     data = load_local_fund_history()
 
     if data.empty:
-        return pd.DataFrame(
-            columns=["date", "nav"]
-        )
+        return empty_history()
 
     result = data[
         data["code"] == fund_code
@@ -711,37 +688,42 @@ def get_local_history(
         ].copy()
 
     if result.empty:
-        return pd.DataFrame(
-            columns=["date", "nav"]
-        )
+        return empty_history()
 
     return normalize_history(
-        result[["date", "nav"]]
+        result[
+            ["date", "nav"]
+        ]
     )
 
 
 # ============================================================
-# 共同基金：線上資料解析
+# 共同基金：解析線上表格
 # ============================================================
 
-def choose_date_nav_columns(
-    table,
-):
-    """尋找日期欄與淨值欄。"""
+def flatten_column_name(column):
+    if isinstance(column, tuple):
+        return " ".join(
+            str(part)
+            for part in column
+        ).strip()
+
+    return str(column).strip()
+
+
+def choose_date_nav_columns(table):
+    """尋找日期欄位及淨值欄位。"""
 
     date_column = None
     nav_column = None
 
     for column in table.columns:
 
-        if isinstance(column, tuple):
-            column_text = " ".join(
-                map(str, column)
-            ).strip()
-        else:
-            column_text = str(
+        column_text = (
+            flatten_column_name(
                 column
-            ).strip()
+            )
+        )
 
         if (
             date_column is None
@@ -765,10 +747,8 @@ def choose_date_nav_columns(
     )
 
 
-def parse_fund_tables(
-    html_text,
-):
-    """解析基金網頁表格。"""
+def parse_fund_tables(html_text):
+    """從基金網頁表格解析日期與淨值。"""
 
     records = []
 
@@ -833,15 +813,44 @@ def parse_fund_tables(
 def fetch_fund_url(url):
     """下載並解析單一基金頁面。"""
 
-    try:
-        response = requests.get(
-            url,
-            headers=HEADERS,
-            timeout=30,
+    response = None
+    last_error = None
+
+    for attempt in range(3):
+
+        try:
+            response = requests.get(
+                url,
+                headers=HEADERS,
+                timeout=45,
+            )
+
+            response.raise_for_status()
+            break
+
+        except requests.RequestException as error:
+
+            response = None
+            last_error = error
+
+            if attempt < 2:
+                time.sleep(
+                    2 * (attempt + 1)
+                )
+
+    if response is None:
+
+        return (
+            empty_history(),
+            (
+                "連線失敗或逾時："
+                f"{type(last_error).__name__}: "
+                f"{last_error}；"
+                f"網址：{url}"
+            ),
         )
 
-        response.raise_for_status()
-
+    try:
         response.encoding = (
             response.apparent_encoding
             or response.encoding
@@ -851,16 +860,28 @@ def fetch_fund_url(url):
             response.text
         )
 
+        if result.empty:
+
+            return (
+                empty_history(),
+                (
+                    "頁面可開啟，但沒有解析到"
+                    "日期與淨值資料："
+                    f"{url}"
+                ),
+            )
+
         return result, None
 
     except Exception as error:
+
         return (
-            pd.DataFrame(
-                columns=["date", "nav"]
-            ),
+            empty_history(),
             (
+                "解析失敗："
                 f"{type(error).__name__}: "
-                f"{error}"
+                f"{error}；"
+                f"網址：{url}"
             ),
         )
 
@@ -869,9 +890,7 @@ def fetch_fund_url(url):
     ttl=1800,
     show_spinner=False,
 )
-def fetch_online_fund_history(
-    urls,
-):
+def fetch_online_fund_history(urls):
     """依序嘗試多個基金來源。"""
 
     frames = []
@@ -885,19 +904,21 @@ def fetch_online_fund_history(
         )
 
         if not data.empty:
+
             frames.append(data)
+
             successful_urls.append(
                 url
             )
 
         elif error:
+
             errors.append(error)
 
     if not frames:
+
         return (
-            pd.DataFrame(
-                columns=["date", "nav"]
-            ),
+            empty_history(),
             errors,
             successful_urls,
         )
@@ -922,7 +943,7 @@ def merge_histories(
     local_history,
     online_history,
 ):
-    """合併 CSV 與線上基金資料。"""
+    """合併 CSV 與線上資料。"""
 
     frames = []
 
@@ -951,9 +972,7 @@ def merge_histories(
         )
 
     if not frames:
-        return pd.DataFrame(
-            columns=["date", "nav"]
-        )
+        return empty_history()
 
     merged = pd.concat(
         frames,
@@ -970,7 +989,9 @@ def merge_histories(
     )
 
     return normalize_history(
-        merged[["date", "nav"]]
+        merged[
+            ["date", "nav"]
+        ]
     )
 
 
@@ -982,7 +1003,7 @@ def get_value_on_or_before(
     history,
     target_date,
 ):
-    """取得指定日期以前最近一筆資料。"""
+    """找指定日期以前最近一筆資料。"""
 
     available = history[
         history["date"]
@@ -1041,7 +1062,7 @@ def calculate_performance(
     history,
     selected_date,
 ):
-    """計算所有績效欄位。"""
+    """計算各期間績效。"""
 
     history = normalize_history(
         history
@@ -1091,20 +1112,24 @@ def calculate_performance(
     return {
         "date": current_date,
         "nav": current_nav,
+
         "Daily": pct_change(
             current_nav,
             previous_nav,
         ),
+
         "MTD": calculate_period_return(
             history,
             current_nav,
             month_target,
         ),
+
         "YTD": calculate_period_return(
             history,
             current_nav,
             year_target,
         ),
+
         "1Y": calculate_period_return(
             history,
             current_nav,
@@ -1113,6 +1138,7 @@ def calculate_performance(
                 - pd.DateOffset(years=1)
             ),
         ),
+
         "2Y": calculate_period_return(
             history,
             current_nav,
@@ -1121,6 +1147,7 @@ def calculate_performance(
                 - pd.DateOffset(years=2)
             ),
         ),
+
         "3Y": calculate_period_return(
             history,
             current_nav,
@@ -1187,7 +1214,7 @@ st.caption(
 
 
 # ============================================================
-# 取得商品資料
+# 取得資料
 # ============================================================
 
 results = []
@@ -1216,9 +1243,11 @@ for index, (
 
     else:
 
-        local_history = get_local_history(
-            product_code,
-            product_info["name"],
+        local_history = (
+            get_local_history(
+                product_code,
+                product_info["name"],
+            )
         )
 
         (
@@ -1262,30 +1291,40 @@ for index, (
                 "name": (
                     product_info["name"]
                 ),
+
                 "online_rows": len(
                     online_history
                 ),
+
                 "csv_rows": len(
                     local_history
                 ),
+
                 "first_date": (
                     online_history[
                         "date"
                     ].min()
-                    if not online_history.empty
+                    if not
+                    online_history.empty
                     else None
                 ),
+
                 "last_date": (
                     online_history[
                         "date"
                     ].max()
-                    if not online_history.empty
+                    if not
+                    online_history.empty
                     else None
                 ),
+
                 "successful_urls": (
                     successful_urls
                 ),
-                "errors": fetch_errors,
+
+                "errors": (
+                    fetch_errors
+                ),
             }
         )
 
@@ -1300,9 +1339,11 @@ for index, (
         product_info["name"]
     ] = history
 
-    performance = calculate_performance(
-        history,
-        selected_date,
+    performance = (
+        calculate_performance(
+            history,
+            selected_date,
+        )
     )
 
     result_row = {
@@ -1330,24 +1371,31 @@ for index, (
                         "%Y/%m/%d"
                     )
                 ),
+
                 "最新淨值": (
                     performance["nav"]
                 ),
+
                 "Daily": (
                     performance["Daily"]
                 ),
+
                 "MTD": (
                     performance["MTD"]
                 ),
+
                 "YTD": (
                     performance["YTD"]
                 ),
+
                 "1Y": (
                     performance["1Y"]
                 ),
+
                 "2Y": (
                     performance["2Y"]
                 ),
+
                 "3Y": (
                     performance["3Y"]
                 ),
@@ -1384,7 +1432,9 @@ with metric_col1:
         "查詢日期",
         pd.Timestamp(
             selected_date
-        ).strftime("%Y/%m/%d"),
+        ).strftime(
+            "%Y/%m/%d"
+        ),
     )
 
 with metric_col2:
@@ -1460,12 +1510,14 @@ if missing_products:
 
     st.warning(
         "目前無法取得可使用資料："
-        + "、".join(missing_products)
+        + "、".join(
+            missing_products
+        )
     )
 
 
 # ============================================================
-# 圖表期間設定
+# 圖表期間
 # ============================================================
 
 st.divider()
@@ -1495,6 +1547,7 @@ days_map = {
 
 if chart_range == "全部可用資料":
     chart_start_date = None
+
 else:
     chart_start_date = (
         pd.Timestamp(selected_date)
@@ -1507,7 +1560,7 @@ else:
 
 
 # ============================================================
-# 原始淨值／收盤價走勢圖
+# 淨值／收盤價走勢圖
 # ============================================================
 
 chart_frames = []
@@ -1706,7 +1759,9 @@ if normalized_frames:
         color="基金名稱",
         labels={
             "date": "日期",
-            "標準化指數": "起點 = 100",
+            "標準化指數": (
+                "起點 = 100"
+            ),
             "基金名稱": "商品",
         },
     )
@@ -1780,27 +1835,47 @@ with st.expander(
 
         if item["successful_urls"]:
 
-            st.caption(
-                "已有線上來源成功取得資料。"
-            )
-
-        elif item["errors"]:
-
             st.write(
-                "線上來源錯誤："
+                "成功取得資料的來源："
             )
 
-            for error_message in item[
-                "errors"
+            for source_url in item[
+                "successful_urls"
             ]:
+
                 st.code(
-                    error_message,
+                    source_url,
                     language="text",
                 )
 
+        if item["errors"]:
+
+            if item["successful_urls"]:
+
+                st.caption(
+                    "部分備援來源無法連線或解析，"
+                    "但已有其他來源成功取得資料，"
+                    "不影響目前顯示結果。"
+                )
+
+            else:
+
+                st.write(
+                    "所有線上來源皆無法取得："
+                )
+
+                for error_message in item[
+                    "errors"
+                ]:
+
+                    st.code(
+                        error_message,
+                        language="text",
+                    )
+
 
 # ============================================================
-# CSV 格式說明
+# CSV 格式與長期資料說明
 # ============================================================
 
 with st.expander(
@@ -1808,9 +1883,9 @@ with st.expander(
 ):
 
     st.write(
-        "fund_nav_history.csv 必須與 "
-        "app.py 放在 GitHub Repository "
-        "的相同位置。"
+        "fund_nav_history.csv "
+        "必須與 app.py 放在 GitHub "
+        "Repository 的相同位置。"
     )
 
     st.code(
@@ -1846,8 +1921,11 @@ with st.expander(
 - **2Y**：目前淨值 ÷ 兩年前最近一筆淨值 − 1
 - **3Y**：目前淨值 ÷ 三年前最近一筆淨值 − 1
 
-如果基準日期以前最近一筆資料距離目標日期超過 10 天，
+若基準日期以前最近一筆資料距離目標日期超過 10 天，
 系統會顯示「-」，避免使用錯誤期間計算績效。
+
+0050 在 2025 年 6 月 18 日以前的價格會除以 4，
+以處理 1 拆 4造成的價格不連續。
 """
     )
 
