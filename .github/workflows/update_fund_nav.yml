@@ -2,12 +2,14 @@ name: Update fund NAV history
 
 on:
   schedule:
-    # UTC 12:00 = 台灣時間 20:00
-    # 週一至週五執行
-    - cron: "0 12 * * 1-5"
+    # 台灣時間約晚上 7 點
+    - cron: "0 11 * * 1-5"
 
-  # 允許從 Actions 頁面手動執行
+    # 台灣時間約晚上 9 點，再補抓一次
+    - cron: "0 13 * * 1-5"
+
   workflow_dispatch:
+
 
 permissions:
   contents: write
