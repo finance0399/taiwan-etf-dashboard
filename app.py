@@ -216,6 +216,63 @@ def normalize_history(data):
     return result.reset_index(drop=True)
 
 
+# ============================================================
+# ETF 分割還原設定
+# ============================================================
+
+ETF_SPLIT_CONFIG = {
+    "0050": [
+        {
+            "effective_date": pd.Timestamp("2025-06-18"),
+            "ratio": 4.0,
+        }
+    ],
+}
+
+
+def adjust_etf_close_price(
+    stock_code,
+    trade_date,
+    close_price,
+):
+    """
+    將 ETF 分割前的收盤價，
+    換算成分割後可比較的價格基準。
+    """
+
+    if pd.isna(trade_date):
+        return close_price
+
+    if pd.isna(close_price):
+        return close_price
+
+    adjusted_price = float(
+        close_price
+    )
+
+    split_events = ETF_SPLIT_CONFIG.get(
+        stock_code,
+        [],
+    )
+
+    for split_event in split_events:
+
+        effective_date = split_event[
+            "effective_date"
+        ]
+
+        split_ratio = split_event[
+            "ratio"
+        ]
+
+        if trade_date < effective_date:
+            adjusted_price = (
+                adjusted_price
+                / split_ratio
+            )
+
+    return adjusted_price
+
 def pct_change(current_value, base_value):
     """計算百分比報酬率。"""
 
@@ -305,20 +362,27 @@ def fetch_twse_month(
                 )
             )
 
-            close_price = safe_float(
-                row[6]
-            )
+close_price = safe_float(
+    row[6]
+)
 
-            if (
-                pd.notna(trade_date)
-                and pd.notna(close_price)
-            ):
-                records.append(
-                    {
-                        "date": trade_date,
-                        "nav": close_price,
-                    }
-                )
+adjusted_close_price = adjust_etf_close_price(
+    stock_code=stock_code,
+    trade_date=trade_date,
+    close_price=close_price,
+)
+
+if (
+    pd.notna(trade_date)
+    and pd.notna(adjusted_close_price)
+):
+    records.append(
+        {
+            "date": trade_date,
+            "nav": adjusted_close_price,
+        }
+    )
+
 
         return normalize_history(
             pd.DataFrame(records)
