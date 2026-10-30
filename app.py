@@ -356,39 +356,40 @@ def fetch_twse_month(
             if len(row) < 7:
                 continue
 
-            trade_date = (
-                parse_roc_or_ad_date(
-                    row[0]
-                )
+            trade_date = parse_roc_or_ad_date(
+                row[0]
             )
 
-close_price = safe_float(
-    row[6]
-)
+            close_price = safe_float(
+                row[6]
+            )
 
-adjusted_close_price = adjust_etf_close_price(
-    stock_code=stock_code,
-    trade_date=trade_date,
-    close_price=close_price,
-)
+            adjusted_close_price = adjust_etf_close_price(
+                stock_code=stock_code,
+                trade_date=trade_date,
+                close_price=close_price,
+            )
 
-if (
-    pd.notna(trade_date)
-    and pd.notna(adjusted_close_price)
-):
-    records.append(
-        {
-            "date": trade_date,
-            "nav": adjusted_close_price,
-        }
-    )
-
+            if (
+                pd.notna(trade_date)
+                and pd.notna(adjusted_close_price)
+            ):
+                records.append(
+                    {
+                        "date": trade_date,
+                        "nav": adjusted_close_price,
+                    }
+                )
 
         return normalize_history(
             pd.DataFrame(records)
         )
 
-    except Exception:
+    except Exception as error:
+        st.error(
+            f"取得 {stock_code} 資料時發生錯誤：{error}"
+        )
+
         return pd.DataFrame(
             columns=["date", "nav"]
         )
