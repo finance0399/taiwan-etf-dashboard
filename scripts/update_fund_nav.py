@@ -1019,14 +1019,20 @@ def main():
 
         successful_funds += 1
 
-    if successful_funds == 0:
+if successful_funds == 0:
 
+    print(
+        "警告：兩檔基金的線上來源本次皆無法更新，"
+        "保留原有 fund_nav_history.csv。"
+    )
+
+    if existing_data.empty:
         print(
-            "兩檔基金皆更新失敗，"
-            "保留原CSV"
+            "目前 fund_nav_history.csv 也是空的，"
+            "因此 Dashboard 暫時沒有共同基金歷史資料。"
         )
 
-        sys.exit(1)
+    return
 
     final_data = merge_all_data(
         existing_data=existing_data,
