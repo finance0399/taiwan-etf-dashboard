@@ -1504,10 +1504,10 @@ st.subheader("📈 績效比較")
 display_df = result_df.copy()
 
 display_df[
-    "最新價格／淨值"
+    "價格／淨值"
 ] = (
     display_df[
-        "最新價格／淨值"
+        "價格／淨值"
     ]
     .apply(format_number)
 )
@@ -1523,7 +1523,7 @@ display_columns = [
     "商品名稱",
     "商品類型",
     "資料日期",
-    "最新價格／淨值",
+    "價格／淨值",
     "Daily",
     "MTD",
     "YTD",
