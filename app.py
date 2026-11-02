@@ -1382,7 +1382,7 @@ for index, (
             product_type_text
         ),
         "資料日期": "-",
-        "最新價格／淨值": np.nan,
+        "價格／淨值": np.nan,
         "計算基準": (
             calculation_basis
         ),
@@ -1405,7 +1405,7 @@ for index, (
                         "%Y/%m/%d"
                     )
                 ),
-                "最新價格／淨值": (
+                "價格／淨值": (
                     performance["value"]
                 ),
                 "Daily": (
@@ -1550,10 +1550,11 @@ st.dataframe(
 
 st.info(
     "計算基準：ETF 採分割調整後的市場收盤價，"
-    "共同基金採正式 NAV。Daily、MTD、YTD、1Y累積、"
-    "2Y累積及3Y累積均為未含配息的累積報酬率；"
-    "2Y累積與3Y累積不是年化報酬率。"
-)
+    "共同基金採正式 NAV。"
+    "Daily、MTD、YTD、1Y累積、2Y累積及3Y累積"
+    "均為未含配息的累積報酬率；"
+    "2Y累積與3Y累積並非年化報酬率。"
+    )
 
 missing_products = result_df[
     result_df["資料來源"]
