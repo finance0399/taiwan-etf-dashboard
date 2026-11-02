@@ -24,8 +24,8 @@ st.set_page_config(
 st.title("📊 台灣 ETF 及共同基金績效比較")
 
 st.caption(
-    "比較 ETF 與共同基金於指定日期的淨值／收盤價，"
-    "以及 Daily、MTD、YTD、1Y、2Y、3Y 績效。"
+    "ETF 採分割調整後的市場收盤價，共同基金採正式 NAV；"
+    "Daily、MTD、YTD、1Y、2Y、3Y 均為未含配息的累積報酬率。"
 )
 
 
@@ -43,8 +43,14 @@ PRODUCTS = {
         "type": "FUND",
         "urls": [
             "https://www.ezmoney.com.tw/funds/value/36",
-            "https://fund.hncb.com.tw/w/wr/wr02_ACPS10-009007.djhtm",
-            "https://www.moneydj.com/funddj/ya/yp010000.djhtm?a=ACPS10",
+            (
+                "https://fund.hncb.com.tw/w/wr/"
+                "wr02_ACPS10-009007.djhtm"
+            ),
+            (
+                "https://www.moneydj.com/funddj/ya/"
+                "yp010000.djhtm?a=ACPS10"
+            ),
         ],
     },
     "00407A": {
@@ -55,9 +61,18 @@ PRODUCTS = {
         "name": "凱基台灣精五門基金",
         "type": "FUND",
         "urls": [
-            "https://fund.hncb.com.tw/w/wr/wr02.djhtm?a=ACKG15-014013",
-            "https://cotabank.moneydj.com/w/wr/wr02_ACKG15.djhtm",
-            "https://www.moneydj.com/funddj/ya/yp010000.djhtm?a=ACKG15",
+            (
+                "https://fund.hncb.com.tw/w/wr/"
+                "wr02_ACKG15-014013.djhtm"
+            ),
+            (
+                "https://chbfund.moneydj.com/w/wr/"
+                "wr02.djhtm?A=ACKG15-9808"
+            ),
+            (
+                "https://tw.stock.yahoo.com/fund/"
+                "F0000040SC:FO/history"
+            ),
         ],
     },
     "009816": {
@@ -81,15 +96,16 @@ PERIOD_COLUMNS = [
     "Daily",
     "MTD",
     "YTD",
-    "1Y",
-    "2Y",
-    "3Y",
+    "1Y累積",
+    "2Y累積",
+    "3Y累積",
 ]
 
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 Chrome/130 Safari/537.36"
+        "AppleWebKit/537.36 "
+        "Chrome/130.0.0.0 Safari/537.36"
     ),
     "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
 }
@@ -120,7 +136,7 @@ def empty_history():
 
 
 def safe_float(value):
-    """安全地將資料轉換成數字。"""
+    """安全轉換數值。"""
 
     try:
         text = str(value).strip()
@@ -149,7 +165,7 @@ def safe_float(value):
 
 
 def normalize_history(data):
-    """統一歷史資料欄位與格式。"""
+    """統一歷史資料格式。"""
 
     if data is None or data.empty:
         return empty_history()
@@ -176,9 +192,10 @@ def normalize_history(data):
     except TypeError:
         pass
 
-    result["nav"] = result[
-        "nav"
-    ].apply(safe_float)
+    result["nav"] = (
+        result["nav"]
+        .apply(safe_float)
+    )
 
     result = result.dropna(
         subset=["date", "nav"]
@@ -211,12 +228,7 @@ def normalize_history(data):
 
 
 def parse_roc_or_ad_date(value):
-    """
-    支援：
-    115/10/27
-    2026/10/27
-    2026-10-27
-    """
+    """解析民國或西元日期。"""
 
     text = str(value).strip()
 
@@ -244,7 +256,6 @@ def parse_roc_or_ad_date(value):
             month=month,
             day=day,
         )
-
     except Exception:
         return pd.NaT
 
@@ -255,10 +266,10 @@ def adjust_etf_close_price(
     close_price,
 ):
     """
-    將 ETF 分割前價格換算成分割後基準。
+    調整 ETF 分割造成的價格不連續。
 
     0050 在 2025-06-18 進行 1 拆 4，
-    因此該日期以前的原始價格除以 4。
+    因此該日期以前的原始收盤價除以 4。
     """
 
     if pd.isna(trade_date):
@@ -299,7 +310,7 @@ def pct_change(
     current_value,
     base_value,
 ):
-    """計算百分比變化。"""
+    """計算累積報酬率。"""
 
     if pd.isna(current_value):
         return np.nan
@@ -335,8 +346,42 @@ def format_pct(value):
     return f"{value:+.2f}%"
 
 
+def performance_color(value):
+    """台股習慣：紅漲、綠跌。"""
+
+    if not isinstance(value, str):
+        return ""
+
+    if value == "-":
+        return ""
+
+    try:
+        number = float(
+            value
+            .replace("%", "")
+            .replace("+", "")
+        )
+
+        if number > 0:
+            return (
+                "color:#d62728;"
+                "font-weight:bold"
+            )
+
+        if number < 0:
+            return (
+                "color:#138a36;"
+                "font-weight:bold"
+            )
+
+    except Exception:
+        return ""
+
+    return ""
+
+
 # ============================================================
-# ETF：臺灣證券交易所資料
+# ETF：臺灣證券交易所市場收盤價
 # ============================================================
 
 @st.cache_data(
@@ -348,7 +393,7 @@ def fetch_twse_month(
     year,
     month,
 ):
-    """取得 ETF 單月交易資料。"""
+    """取得 ETF 單月市場收盤價。"""
 
     url = (
         "https://www.twse.com.tw/"
@@ -393,7 +438,6 @@ def fetch_twse_month(
             "data",
             [],
         )
-
     except Exception:
         return empty_history()
 
@@ -444,8 +488,6 @@ def month_iterator(
     start_date,
     end_date,
 ):
-    """依月份產生年月。"""
-
     current = pd.Timestamp(
         year=start_date.year,
         month=start_date.month,
@@ -479,7 +521,7 @@ def fetch_etf_history(
     stock_code,
     selected_date,
 ):
-    """取得 ETF 約三年又兩個月資料。"""
+    """取得 ETF 三年又兩個月價格資料。"""
 
     end_date = pd.Timestamp(
         selected_date
@@ -499,6 +541,7 @@ def fetch_etf_history(
         start_date,
         end_date,
     ):
+
         monthly_data = fetch_twse_month(
             stock_code,
             year,
@@ -532,7 +575,7 @@ def fetch_etf_history(
 
 
 # ============================================================
-# 共同基金：讀取 CSV
+# 共同基金：讀取歷史 CSV
 # ============================================================
 
 @st.cache_data(
@@ -562,6 +605,7 @@ def load_local_fund_history():
         "cp950",
         "big5",
     ]:
+
         try:
             data = pd.read_csv(
                 LOCAL_FUND_FILE,
@@ -595,6 +639,7 @@ def load_local_fund_history():
         "Name": "name",
         "NAME": "name",
         "淨值": "nav",
+        "基金淨值": "nav",
         "NAV": "nav",
         "Nav": "nav",
     }
@@ -608,6 +653,7 @@ def load_local_fund_history():
         "code",
         "nav",
     }.issubset(data.columns):
+
         return empty_result
 
     if "name" not in data.columns:
@@ -622,6 +668,7 @@ def load_local_fund_history():
         data["code"]
         .astype(str)
         .str.strip()
+        .str.upper()
     )
 
     data["name"] = (
@@ -630,9 +677,10 @@ def load_local_fund_history():
         .str.strip()
     )
 
-    data["nav"] = data[
-        "nav"
-    ].apply(safe_float)
+    data["nav"] = (
+        data["nav"]
+        .apply(safe_float)
+    )
 
     data = data.dropna(
         subset=[
@@ -667,7 +715,7 @@ def get_local_history(
     fund_code,
     fund_name,
 ):
-    """取得單一基金的 CSV 歷史資料。"""
+    """取得指定共同基金歷史 NAV。"""
 
     data = load_local_fund_history()
 
@@ -679,6 +727,7 @@ def get_local_history(
     ].copy()
 
     if result.empty:
+
         result = data[
             data["name"].str.contains(
                 fund_name,
@@ -698,11 +747,12 @@ def get_local_history(
 
 
 # ============================================================
-# 共同基金：解析線上表格
+# 共同基金：線上近期 NAV
 # ============================================================
 
 def flatten_column_name(column):
     if isinstance(column, tuple):
+
         return " ".join(
             str(part)
             for part in column
@@ -712,7 +762,7 @@ def flatten_column_name(column):
 
 
 def choose_date_nav_columns(table):
-    """尋找日期欄位及淨值欄位。"""
+    """尋找日期欄與淨值欄。"""
 
     date_column = None
     nav_column = None
@@ -748,7 +798,7 @@ def choose_date_nav_columns(table):
 
 
 def parse_fund_tables(html_text):
-    """從基金網頁表格解析日期與淨值。"""
+    """解析基金日期與正式 NAV。"""
 
     records = []
 
@@ -756,7 +806,6 @@ def parse_fund_tables(html_text):
         tables = pd.read_html(
             StringIO(html_text)
         )
-
     except Exception:
         tables = []
 
@@ -811,7 +860,7 @@ def parse_fund_tables(html_text):
     show_spinner=False,
 )
 def fetch_fund_url(url):
-    """下載並解析單一基金頁面。"""
+    """下載並解析基金近期 NAV。"""
 
     response = None
     last_error = None
@@ -845,8 +894,7 @@ def fetch_fund_url(url):
             (
                 "連線失敗或逾時："
                 f"{type(last_error).__name__}: "
-                f"{last_error}；"
-                f"網址：{url}"
+                f"{last_error}"
             ),
         )
 
@@ -865,9 +913,8 @@ def fetch_fund_url(url):
             return (
                 empty_history(),
                 (
-                    "頁面可開啟，但沒有解析到"
-                    "日期與淨值資料："
-                    f"{url}"
+                    "頁面可開啟，"
+                    "但沒有解析到日期與淨值"
                 ),
             )
 
@@ -880,8 +927,7 @@ def fetch_fund_url(url):
             (
                 "解析失敗："
                 f"{type(error).__name__}: "
-                f"{error}；"
-                f"網址：{url}"
+                f"{error}"
             ),
         )
 
@@ -890,8 +936,10 @@ def fetch_fund_url(url):
     ttl=1800,
     show_spinner=False,
 )
-def fetch_online_fund_history(urls):
-    """依序嘗試多個基金來源。"""
+def fetch_online_fund_history(
+    urls,
+):
+    """依序嘗試基金線上來源。"""
 
     frames = []
     errors = []
@@ -912,8 +960,9 @@ def fetch_online_fund_history(urls):
             )
 
         elif error:
-
-            errors.append(error)
+            errors.append(
+                f"{url}：{error}"
+            )
 
     if not frames:
 
@@ -943,7 +992,11 @@ def merge_histories(
     local_history,
     online_history,
 ):
-    """合併 CSV 與線上資料。"""
+    """
+    合併歷史 CSV 與線上近期 NAV。
+
+    同日期以線上資料優先。
+    """
 
     frames = []
 
@@ -1023,15 +1076,19 @@ def get_value_on_or_before(
 
 def calculate_period_return(
     history,
-    current_nav,
+    current_value,
     target_date,
     maximum_gap_days=10,
 ):
-    """計算指定期間累積報酬。"""
+    """
+    使用目標日期以前最近資料計算累積報酬。
+
+    基準資料距離目標日期超過10天時不計算。
+    """
 
     (
         base_date,
-        base_nav,
+        base_value,
     ) = get_value_on_or_before(
         history,
         target_date,
@@ -1053,8 +1110,8 @@ def calculate_period_return(
         return np.nan
 
     return pct_change(
-        current_nav,
-        base_nav,
+        current_value,
+        base_value,
     )
 
 
@@ -1062,7 +1119,7 @@ def calculate_performance(
     history,
     selected_date,
 ):
-    """計算各期間績效。"""
+    """計算各期間未含配息累積報酬。"""
 
     history = normalize_history(
         history
@@ -1073,7 +1130,7 @@ def calculate_performance(
 
     (
         current_date,
-        current_nav,
+        current_value,
     ) = get_value_on_or_before(
         history,
         selected_date,
@@ -1088,9 +1145,9 @@ def calculate_performance(
     ]
 
     if previous_data.empty:
-        previous_nav = np.nan
+        previous_value = np.nan
     else:
-        previous_nav = (
+        previous_value = (
             previous_data
             .iloc[-1]["nav"]
         )
@@ -1111,90 +1168,52 @@ def calculate_performance(
 
     return {
         "date": current_date,
-        "nav": current_nav,
+        "value": current_value,
 
         "Daily": pct_change(
-            current_nav,
-            previous_nav,
+            current_value,
+            previous_value,
         ),
 
         "MTD": calculate_period_return(
             history,
-            current_nav,
+            current_value,
             month_target,
         ),
 
         "YTD": calculate_period_return(
             history,
-            current_nav,
+            current_value,
             year_target,
         ),
 
-        "1Y": calculate_period_return(
+        "1Y累積": calculate_period_return(
             history,
-            current_nav,
+            current_value,
             (
                 current_date
                 - pd.DateOffset(years=1)
             ),
         ),
 
-        "2Y": calculate_period_return(
+        "2Y累積": calculate_period_return(
             history,
-            current_nav,
+            current_value,
             (
                 current_date
                 - pd.DateOffset(years=2)
             ),
         ),
 
-        "3Y": calculate_period_return(
+        "3Y累積": calculate_period_return(
             history,
-            current_nav,
+            current_value,
             (
                 current_date
                 - pd.DateOffset(years=3)
             ),
         ),
     }
-
-
-# ============================================================
-# 表格顏色
-# ============================================================
-
-def performance_color(value):
-    """台股習慣：紅漲、綠跌。"""
-
-    if not isinstance(value, str):
-        return ""
-
-    if value == "-":
-        return ""
-
-    try:
-        number = float(
-            value
-            .replace("%", "")
-            .replace("+", "")
-        )
-
-        if number > 0:
-            return (
-                "color:#d62728;"
-                "font-weight:bold"
-            )
-
-        if number < 0:
-            return (
-                "color:#138a36;"
-                "font-weight:bold"
-            )
-
-    except Exception:
-        return ""
-
-    return ""
 
 
 # ============================================================
@@ -1208,13 +1227,13 @@ selected_date = st.date_input(
 )
 
 st.caption(
-    "若所選日期為假日或當日尚未公布資料，"
-    "系統會採用該日期以前最近一筆可取得資料。"
+    "若查詢日期為假日或尚未公布資料，"
+    "系統會使用該日期以前最近一筆資料。"
 )
 
 
 # ============================================================
-# 取得資料
+# 取得各商品資料
 # ============================================================
 
 results = []
@@ -1232,22 +1251,31 @@ for index, (
     product_info,
 ) in enumerate(product_items):
 
-    if product_info["type"] == "ETF":
+    is_etf = (
+        product_info["type"]
+        == "ETF"
+    )
+
+    if is_etf:
 
         history = fetch_etf_history(
             product_code,
             selected_date,
         )
 
+        product_type_text = "ETF"
+
+        calculation_basis = (
+            "市場收盤價"
+        )
+
         data_source = "TWSE"
 
     else:
 
-        local_history = (
-            get_local_history(
-                product_code,
-                product_info["name"],
-            )
+        local_history = get_local_history(
+            product_code,
+            product_info["name"],
         )
 
         (
@@ -1263,6 +1291,14 @@ for index, (
         history = merge_histories(
             local_history,
             online_history,
+        )
+
+        product_type_text = (
+            "共同基金"
+        )
+
+        calculation_basis = (
+            "正式 NAV"
         )
 
         if (
@@ -1291,15 +1327,12 @@ for index, (
                 "name": (
                     product_info["name"]
                 ),
-
                 "online_rows": len(
                     online_history
                 ),
-
                 "csv_rows": len(
                     local_history
                 ),
-
                 "first_date": (
                     online_history[
                         "date"
@@ -1308,7 +1341,6 @@ for index, (
                     online_history.empty
                     else None
                 ),
-
                 "last_date": (
                     online_history[
                         "date"
@@ -1317,14 +1349,10 @@ for index, (
                     online_history.empty
                     else None
                 ),
-
                 "successful_urls": (
                     successful_urls
                 ),
-
-                "errors": (
-                    fetch_errors
-                ),
+                "errors": fetch_errors,
             }
         )
 
@@ -1347,17 +1375,23 @@ for index, (
     )
 
     result_row = {
-        "基金名稱": (
+        "商品名稱": (
             product_info["name"]
         ),
-        "淨值日期": "-",
-        "最新淨值": np.nan,
+        "商品類型": (
+            product_type_text
+        ),
+        "資料日期": "-",
+        "最新價格／淨值": np.nan,
+        "計算基準": (
+            calculation_basis
+        ),
         "Daily": np.nan,
         "MTD": np.nan,
         "YTD": np.nan,
-        "1Y": np.nan,
-        "2Y": np.nan,
-        "3Y": np.nan,
+        "1Y累積": np.nan,
+        "2Y累積": np.nan,
+        "3Y累積": np.nan,
         "資料來源": data_source,
     }
 
@@ -1365,39 +1399,32 @@ for index, (
 
         result_row.update(
             {
-                "淨值日期": (
+                "資料日期": (
                     performance["date"]
                     .strftime(
                         "%Y/%m/%d"
                     )
                 ),
-
-                "最新淨值": (
-                    performance["nav"]
+                "最新價格／淨值": (
+                    performance["value"]
                 ),
-
                 "Daily": (
                     performance["Daily"]
                 ),
-
                 "MTD": (
                     performance["MTD"]
                 ),
-
                 "YTD": (
                     performance["YTD"]
                 ),
-
-                "1Y": (
-                    performance["1Y"]
+                "1Y累積": (
+                    performance["1Y累積"]
                 ),
-
-                "2Y": (
-                    performance["2Y"]
+                "2Y累積": (
+                    performance["2Y累積"]
                 ),
-
-                "3Y": (
-                    performance["3Y"]
+                "3Y累積": (
+                    performance["3Y累積"]
                 ),
             }
         )
@@ -1432,18 +1459,16 @@ with metric_col1:
         "查詢日期",
         pd.Timestamp(
             selected_date
-        ).strftime(
-            "%Y/%m/%d"
-        ),
+        ).strftime("%Y/%m/%d"),
     )
 
 with metric_col2:
 
     valid_dates = pd.to_datetime(
         result_df.loc[
-            result_df["淨值日期"]
+            result_df["資料日期"]
             != "-",
-            "淨值日期",
+            "資料日期",
         ],
         errors="coerce",
     ).dropna()
@@ -1478,8 +1503,12 @@ st.subheader("📈 績效比較")
 
 display_df = result_df.copy()
 
-display_df["最新淨值"] = (
-    display_df["最新淨值"]
+display_df[
+    "最新價格／淨值"
+] = (
+    display_df[
+        "最新價格／淨值"
+    ]
     .apply(format_number)
 )
 
@@ -1489,6 +1518,25 @@ for column in PERIOD_COLUMNS:
         display_df[column]
         .apply(format_pct)
     )
+
+display_columns = [
+    "商品名稱",
+    "商品類型",
+    "資料日期",
+    "最新價格／淨值",
+    "計算基準",
+    "Daily",
+    "MTD",
+    "YTD",
+    "1Y累積",
+    "2Y累積",
+    "3Y累積",
+    "資料來源",
+]
+
+display_df = display_df[
+    display_columns
+]
 
 styled_df = display_df.style.map(
     performance_color,
@@ -1501,10 +1549,16 @@ st.dataframe(
     hide_index=True,
 )
 
+st.info(
+    "計算口徑：ETF 採分割調整後市場收盤價；"
+    "共同基金採正式 NAV。各期間均為未含配息的累積報酬率，"
+    "2Y累積與3Y累積不是年化報酬率。"
+)
+
 missing_products = result_df[
     result_df["資料來源"]
     == "無可用資料"
-]["基金名稱"].tolist()
+]["商品名稱"].tolist()
 
 if missing_products:
 
@@ -1523,7 +1577,7 @@ if missing_products:
 st.divider()
 
 st.subheader(
-    "📉 淨值／收盤價走勢"
+    "📉 價格／淨值走勢"
 )
 
 chart_range = st.selectbox(
@@ -1547,7 +1601,6 @@ days_map = {
 
 if chart_range == "全部可用資料":
     chart_start_date = None
-
 else:
     chart_start_date = (
         pd.Timestamp(selected_date)
@@ -1560,7 +1613,7 @@ else:
 
 
 # ============================================================
-# 淨值／收盤價走勢圖
+# 原始價格／淨值走勢
 # ============================================================
 
 chart_frames = []
@@ -1582,7 +1635,7 @@ for (
     if not chart_data.empty:
 
         chart_data[
-            "基金名稱"
+            "商品名稱"
         ] = product_name
 
         chart_frames.append(
@@ -1600,12 +1653,12 @@ if chart_frames:
         chart_df,
         x="date",
         y="nav",
-        color="基金名稱",
+        color="商品名稱",
         markers=False,
         labels={
             "date": "日期",
-            "nav": "淨值／收盤價",
-            "基金名稱": "商品",
+            "nav": "價格／淨值",
+            "商品名稱": "商品",
         },
     )
 
@@ -1620,6 +1673,12 @@ if chart_frames:
         use_container_width=True,
     )
 
+    st.caption(
+        "原始價格／淨值尺度不同，"
+        "此圖適合查看各商品自身走勢，"
+        "不適合直接判斷跨商品績效高低。"
+    )
+
 else:
 
     st.info(
@@ -1628,15 +1687,15 @@ else:
 
 
 # ============================================================
-# 各期間績效比較圖
+# 各期間累積報酬比較
 # ============================================================
 
 st.subheader(
-    "📊 各期間績效比較"
+    "📊 各期間累積報酬比較"
 )
 
 performance_long = result_df.melt(
-    id_vars=["基金名稱"],
+    id_vars=["商品名稱"],
     value_vars=PERIOD_COLUMNS,
     var_name="期間",
     value_name="報酬率",
@@ -1655,12 +1714,12 @@ if not performance_long.empty:
         performance_long,
         x="期間",
         y="報酬率",
-        color="基金名稱",
+        color="商品名稱",
         barmode="group",
         text_auto=".2f",
         labels={
-            "報酬率": "報酬率 (%)",
-            "基金名稱": "商品",
+            "報酬率": "累積報酬率 (%)",
+            "商品名稱": "商品",
         },
     )
 
@@ -1692,7 +1751,7 @@ else:
 # ============================================================
 
 st.subheader(
-    "📐 起點標準化走勢（起點 = 100）"
+    "📐 標準化績效走勢（起點 = 100）"
 )
 
 normalized_frames = []
@@ -1718,14 +1777,14 @@ for (
     if normalized_data.empty:
         continue
 
-    first_nav = (
+    first_value = (
         normalized_data
         .iloc[0]["nav"]
     )
 
     if (
-        pd.isna(first_nav)
-        or first_nav == 0
+        pd.isna(first_value)
+        or first_value == 0
     ):
         continue
 
@@ -1733,12 +1792,12 @@ for (
         "標準化指數"
     ] = (
         normalized_data["nav"]
-        / first_nav
+        / first_value
         * 100
     )
 
     normalized_data[
-        "基金名稱"
+        "商品名稱"
     ] = product_name
 
     normalized_frames.append(
@@ -1756,13 +1815,13 @@ if normalized_frames:
         normalized_df,
         x="date",
         y="標準化指數",
-        color="基金名稱",
+        color="商品名稱",
         labels={
             "date": "日期",
             "標準化指數": (
                 "起點 = 100"
             ),
-            "基金名稱": "商品",
+            "商品名稱": "商品",
         },
     )
 
@@ -1783,6 +1842,11 @@ if normalized_frames:
         use_container_width=True,
     )
 
+    st.caption(
+        "標準化圖將各商品在所選期間的第一筆資料設為100，"
+        "較適合比較不同價格尺度商品的相對績效。"
+    )
+
 else:
 
     st.info(
@@ -1795,7 +1859,7 @@ else:
 # ============================================================
 
 with st.expander(
-    "🔧 資料抓取診斷"
+    "🔧 共同基金資料診斷"
 ):
 
     for item in diagnostics:
@@ -1806,7 +1870,7 @@ with st.expander(
 
         st.write(
             f"線上取得 "
-            f"{item['online_rows']} 筆，"
+            f"{item['online_rows']} 筆；"
             f"CSV 取得 "
             f"{item['csv_rows']} 筆。"
         )
@@ -1854,8 +1918,7 @@ with st.expander(
 
                 st.caption(
                     "部分備援來源無法連線或解析，"
-                    "但已有其他來源成功取得資料，"
-                    "不影響目前顯示結果。"
+                    "但已有其他來源成功取得資料。"
                 )
 
             else:
@@ -1875,57 +1938,39 @@ with st.expander(
 
 
 # ============================================================
-# CSV 格式與長期資料說明
+# 計算說明
 # ============================================================
 
 with st.expander(
-    "📁 fund_nav_history.csv 格式與長期資料說明"
-):
-
-    st.write(
-        "fund_nav_history.csv "
-        "必須與 app.py 放在 GitHub "
-        "Repository 的相同位置。"
-    )
-
-    st.code(
-        """date,code,name,nav
-2026-10-27,A09012,統一奔騰基金,711.97
-2026-10-28,A09012,統一奔騰基金,747.96
-2026-10-27,A41209,凱基台灣精五門基金,181.37
-2026-10-28,A41209,凱基台灣精五門基金,191.01""",
-        language="text",
-    )
-
-    st.info(
-        "公開基金網頁通常只提供近期資料。"
-        "長期績效需由 fund_nav_history.csv "
-        "持續累積，或由自動更新程式回補。"
-    )
-
-
-# ============================================================
-# 績效計算說明
-# ============================================================
-
-with st.expander(
-    "ℹ️ 績效計算方式"
+    "ℹ️ 計算口徑與限制"
 ):
 
     st.markdown(
         """
-- **Daily**：目前淨值 ÷ 前一筆淨值 − 1
-- **MTD**：目前淨值 ÷ 上月底最後一筆淨值 − 1
-- **YTD**：目前淨值 ÷ 去年底最後一筆淨值 − 1
-- **1Y**：目前淨值 ÷ 一年前最近一筆淨值 − 1
-- **2Y**：目前淨值 ÷ 兩年前最近一筆淨值 − 1
-- **3Y**：目前淨值 ÷ 三年前最近一筆淨值 − 1
+### ETF
 
-若基準日期以前最近一筆資料距離目標日期超過 10 天，
-系統會顯示「-」，避免使用錯誤期間計算績效。
+- 使用臺灣證券交易所市場收盤價。
+- 0050 已調整 2025 年 6 月 18 日的 1 拆 4。
+- 尚未計入現金股利再投資，因此不是含息總報酬。
 
-0050 在 2025 年 6 月 18 日以前的價格會除以 4，
-以處理 1 拆 4造成的價格不連續。
+### 共同基金
+
+- 使用基金公司或基金資訊頁面公布的正式 NAV。
+- 歷史資料由 `fund_nav_history.csv` 提供。
+- 線上近期資料與 CSV 同日期並存時，以線上資料優先。
+
+### 報酬率
+
+- **Daily**：目前值 ÷ 前一筆值 − 1
+- **MTD**：目前值 ÷ 上月底值 − 1
+- **YTD**：目前值 ÷ 去年底值 − 1
+- **1Y累積**：目前值 ÷ 一年前值 − 1
+- **2Y累積**：目前值 ÷ 兩年前值 − 1
+- **3Y累積**：目前值 ÷ 三年前值 − 1
+
+1Y、2Y、3Y 均為累積報酬率，不是年化報酬率。
+若基準日期以前最近一筆資料距離目標日期超過10天，
+系統將顯示「-」。
 """
     )
 
@@ -1937,12 +1982,7 @@ with st.expander(
 st.divider()
 
 st.caption(
-    "ETF 資料來源為臺灣證券交易所；"
-    "共同基金使用基金資訊頁面，"
-    "並以 fund_nav_history.csv 作為備援。"
-)
-
-st.caption(
-    "資料僅供研究與績效比較使用，"
-    "正式淨值仍以基金公司公告為準。"
+    "資料僅供研究與績效比較使用。"
+    "ETF正式基金淨值可能與市場收盤價不同；"
+    "共同基金正式資料仍以基金公司公告為準。"
 )
