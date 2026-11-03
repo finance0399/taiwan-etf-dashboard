@@ -16,7 +16,7 @@ import streamlit as st
 
 
 # ============================================================
-# 基本設定
+# 頁面與共用設定
 # ============================================================
 
 st.set_page_config(
@@ -25,10 +25,10 @@ st.set_page_config(
     layout="wide",
 )
 
-TZ = ZoneInfo("Asia/Taipei")
-CSV = Path("fund_nav_history.csv")
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+LOCAL_FUND_FILE = Path("fund_nav_history.csv")
 
-PERIODS = [
+PERIOD_COLUMNS = [
     "Daily",
     "MTD",
     "YTD",
@@ -37,11 +37,17 @@ PERIODS = [
     "3Y累積",
 ]
 
-MIN_RISK = 60
+MIN_RISK_OBSERVATIONS = 60
+EXPECTED_FUND_CODES = {"A09012", "A41209"}
 
-FUND_CODES = {
-    "A09012",
-    "A41209",
+REQUEST_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 "
+        "(Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 "
+        "Chrome/130.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
 }
 
 
@@ -98,41 +104,27 @@ PRODUCTS = {
 }
 
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 "
-        "(Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 "
-        "Chrome/130 Safari/537.36"
-    ),
-    "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
-}
-
-
-SPLITS = {
+ETF_SPLIT_CONFIG = {
     "0050": [
-        (
-            pd.Timestamp("2025-06-18"),
-            4.0,
-        )
+        {
+            "effective_date": pd.Timestamp("2025-06-18"),
+            "ratio": 4.0,
+        }
     ]
 }
 
 
 # ============================================================
-# 共用工具
+# 共用資料工具
 # ============================================================
 
-def empty():
+def empty_history():
     return pd.DataFrame(
-        columns=[
-            "date",
-            "nav",
-        ]
+        columns=["date", "nav"]
     )
 
 
-def num(value):
+def safe_float(value):
     try:
         text = (
             str(value)
@@ -159,22 +151,16 @@ def num(value):
         return np.nan
 
 
-def norm(data):
+def normalize_history(data):
     if (
         data is None
         or data.empty
-        or not {
-            "date",
-            "nav",
-        }.issubset(data.columns)
+        or not {"date", "nav"}.issubset(data.columns)
     ):
-        return empty()
+        return empty_history()
 
     result = data[
-        [
-            "date",
-            "nav",
-        ]
+        ["date", "nav"]
     ].copy()
 
     result["date"] = pd.to_datetime(
@@ -182,8 +168,9 @@ def norm(data):
         errors="coerce",
     )
 
-    result["nav"] = result["nav"].map(
-        num
+    result["nav"] = (
+        result["nav"]
+        .map(safe_float)
     )
 
     try:
@@ -191,14 +178,12 @@ def norm(data):
             result["date"]
             .dt.tz_localize(None)
         )
+
     except Exception:
         pass
 
     result = result.dropna(
-        subset=[
-            "date",
-            "nav",
-        ]
+        subset=["date", "nav"]
     )
 
     result = result[
@@ -210,9 +195,8 @@ def norm(data):
         .dt.normalize()
     )
 
-    return (
-        result
-        .sort_values("date")
+    result = (
+        result.sort_values("date")
         .drop_duplicates(
             subset=["date"],
             keep="last",
@@ -220,8 +204,10 @@ def norm(data):
         .reset_index(drop=True)
     )
 
+    return result
 
-def parse_date(value):
+
+def parse_roc_or_ad_date(value):
     match = re.search(
         r"(\d{2,4})[/-]"
         r"(\d{1,2})[/-]"
@@ -242,18 +228,16 @@ def parse_date(value):
 
     try:
         return pd.Timestamp(
-            year,
-            month,
-            day,
+            year=year,
+            month=month,
+            day=day,
         )
+
     except Exception:
         return pd.NaT
 
 
-def pct(
-    current_value,
-    base_value,
-):
+def calculate_return(current_value, base_value):
     if (
         pd.isna(current_value)
         or pd.isna(base_value)
@@ -262,17 +246,15 @@ def pct(
         return np.nan
 
     return (
-        current_value
-        / base_value
-        - 1
+        current_value / base_value - 1
     ) * 100
 
 
 # ============================================================
-# 表格格式
+# 顯示格式工具
 # ============================================================
 
-def fmt_num(value):
+def format_number(value):
     if pd.isna(value):
         return "-"
 
@@ -283,21 +265,14 @@ def fmt_num(value):
     )
 
 
-def fmt_pct(value):
+def format_percentage(value):
     if pd.isna(value):
         return "-"
 
     return f"{value:+.2f}%"
 
 
-def fmt_daily(value):
-    """
-    Daily顯示格式：
-    上漲：▲ +1.23%
-    下跌：▼ -1.23%
-    平盤：0.00%
-    """
-
+def format_daily(value):
     if pd.isna(value):
         return "-"
 
@@ -310,250 +285,221 @@ def fmt_daily(value):
     return "0.00%"
 
 
-def value_color(value):
-    """
-    台股顯示慣例：
-    上漲紅色
-    下跌綠色
-    """
+def return_style(value):
+    if pd.isna(value):
+        return "#374151", False
 
-    if (
-        not isinstance(value, str)
-        or value == "-"
-    ):
-        return ""
+    if value > 0:
+        return "#d62728", True
 
-    try:
-        number = float(
-            value
-            .replace("%", "")
-            .replace("+", "")
-            .replace("▲", "")
-            .replace("▼", "")
-            .strip()
-        )
+    if value < 0:
+        return "#138a36", True
 
-        if number > 0:
-            return (
-                "color:#d62728;"
-                "font-weight:700"
-            )
-
-        if number < 0:
-            return (
-                "color:#138a36;"
-                "font-weight:700"
-            )
-
-    except Exception:
-        pass
-
-    return ""
+    return "#374151", False
 
 
-def row_price_color(row):
-    """
-    價格／淨值依Daily漲跌顯示顏色。
-    """
-
-    styles = pd.Series(
-        "",
-        index=row.index,
-    )
-
-    daily_value = row.get(
-        "_Daily數值",
-        np.nan,
-    )
-
-    if pd.notna(daily_value):
-
-        if daily_value > 0:
-            styles[
-                "價格／淨值"
-            ] = (
-                "color:#d62728;"
-                "font-weight:700;"
-                "text-align:right"
-            )
-
-        elif daily_value < 0:
-            styles[
-                "價格／淨值"
-            ] = (
-                "color:#138a36;"
-                "font-weight:700;"
-                "text-align:right"
-            )
-
-        else:
-            styles[
-                "價格／淨值"
-            ] = (
-                "text-align:right"
-            )
-
-    return styles
-
-
-def display_width(value):
-    """
-    中文、全形字元算2格，
-    英文、數字算1格。
-    """
-
-    total_width = 0
+def display_character_width(value):
+    width = 0
 
     for character in str(value):
-
         if (
-            unicodedata.east_asian_width(
-                character
-            )
-            in {
-                "W",
-                "F",
-                "A",
-            }
+            unicodedata.east_asian_width(character)
+            in {"W", "F", "A"}
         ):
-            total_width += 2
+            width += 2
         else:
-            total_width += 1
+            width += 1
 
-    return total_width
+    return width
 
 
-def auto_width(
+def automatic_column_width(
     dataframe,
     column_name,
-    extra=5,
-    minimum=75,
-    maximum=360,
+    extra_characters=5,
+    minimum_pixels=75,
+    maximum_pixels=360,
 ):
-    """
-    欄寬依最長內容加5個字元計算。
-    回傳整數像素，避免max-width錯誤。
-    """
-
-    widths = [
-        display_width(
-            column_name
-        )
+    values = [
+        column_name,
+        *dataframe[column_name]
+        .astype(str)
+        .tolist(),
     ]
 
-    widths.extend(
-        dataframe[
-            column_name
-        ]
-        .astype(str)
-        .map(display_width)
-        .tolist()
-    )
-
     longest_width = max(
-        widths
+        display_character_width(value)
+        for value in values
     )
 
     calculated_width = (
-        longest_width + extra
+        longest_width
+        + extra_characters
     ) * 9
 
     return max(
-        minimum,
+        minimum_pixels,
         min(
             calculated_width,
-            maximum,
+            maximum_pixels,
         ),
     )
 
 
+def escape_html(value):
+    text = str(value)
+
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def make_table_cell(
+    value,
+    alignment="left",
+    color=None,
+    bold=False,
+):
+    style = (
+        f"text-align:{alignment};"
+        "white-space:nowrap;"
+        "padding:10px 12px;"
+        "border-bottom:1px solid #e5e7eb;"
+        "font-variant-numeric:tabular-nums;"
+    )
+
+    if color:
+        style += f"color:{color};"
+
+    if bold:
+        style += "font-weight:700;"
+
+    return (
+        f'<td style="{style}">'
+        f"{escape_html(value)}"
+        "</td>"
+    )
+
+
 # ============================================================
-# 下次排程時間
+# 下次排程
 # ============================================================
 
-def next_update():
-    now = datetime.now(TZ)
+def get_next_update_text():
+    now = datetime.now(TAIPEI_TZ)
 
-    for day_add in range(8):
-
-        target_day = (
+    for day_offset in range(8):
+        target_date = (
             now.date()
-            + timedelta(days=day_add)
+            + timedelta(days=day_offset)
         )
 
-        if target_day.weekday() >= 5:
+        if target_date.weekday() >= 5:
             continue
 
         for target_time in [
             dtime(19, 0),
             dtime(21, 30),
         ]:
-
-            candidate = (
-                datetime.combine(
-                    target_day,
-                    target_time,
-                    tzinfo=TZ,
-                )
+            candidate = datetime.combine(
+                target_date,
+                target_time,
+                tzinfo=TAIPEI_TZ,
             )
 
-            if candidate > now:
+            if candidate <= now:
+                continue
 
-                if (
-                    target_day
-                    == now.date()
-                ):
-                    prefix = "今日"
+            if target_date == now.date():
+                prefix = "今日"
 
-                elif (
-                    target_day
-                    == now.date()
-                    + timedelta(days=1)
-                ):
-                    prefix = "明日"
+            elif (
+                target_date
+                == now.date()
+                + timedelta(days=1)
+            ):
+                prefix = "明日"
 
-                else:
-                    prefix = (
-                        f"{candidate:%m/%d}"
-                    )
+            else:
+                weekdays = "一二三四五六日"
 
-                return (
-                    f"{prefix} "
-                    f"{candidate:%H:%M}"
+                prefix = (
+                    f"{candidate:%m/%d}"
+                    f"（週"
+                    f"{weekdays[candidate.weekday()]}"
+                    f"）"
                 )
+
+            return (
+                f"{prefix} "
+                f"{candidate:%H:%M}"
+            )
 
     return "-"
 
 
 # ============================================================
-# ETF資料
+# ETF資料抓取
 # ============================================================
+
+def adjust_etf_price(
+    stock_code,
+    trade_date,
+    close_price,
+):
+    if (
+        pd.isna(trade_date)
+        or pd.isna(close_price)
+    ):
+        return close_price
+
+    adjusted_price = float(close_price)
+
+    for event in ETF_SPLIT_CONFIG.get(
+        stock_code,
+        [],
+    ):
+        if (
+            trade_date
+            < event["effective_date"]
+        ):
+            adjusted_price /= event["ratio"]
+
+    return adjusted_price
+
 
 @st.cache_data(
     ttl=3600,
     show_spinner=False,
 )
-def twse_month(
-    code,
+def fetch_twse_month(
+    stock_code,
     year,
     month,
 ):
+    url = (
+        "https://www.twse.com.tw/"
+        "exchangeReport/STOCK_DAY"
+    )
+
+    params = {
+        "response": "json",
+        "date": (
+            f"{year}"
+            f"{month:02d}"
+            "01"
+        ),
+        "stockNo": stock_code,
+    }
+
     try:
         response = requests.get(
-            (
-                "https://www.twse.com.tw/"
-                "exchangeReport/STOCK_DAY"
-            ),
-            params={
-                "response": "json",
-                "date": (
-                    f"{year}"
-                    f"{month:02d}"
-                    "01"
-                ),
-                "stockNo": code,
-            },
-            headers=HEADERS,
+            url,
+            params=params,
+            headers=REQUEST_HEADERS,
             timeout=45,
         )
 
@@ -565,52 +511,42 @@ def twse_month(
         )
 
     except Exception:
-        return empty()
+        return empty_history()
 
     records = []
 
     for row in rows:
-
         if len(row) < 7:
             continue
 
-        trade_date = parse_date(
-            row[0]
+        trade_date = (
+            parse_roc_or_ad_date(
+                row[0]
+            )
         )
 
-        close_price = num(
+        close_price = safe_float(
             row[6]
         )
 
-        for (
-            effective_date,
-            split_ratio,
-        ) in SPLITS.get(
-            code,
-            [],
-        ):
-
-            if (
-                pd.notna(trade_date)
-                and trade_date
-                < effective_date
-            ):
-                close_price /= (
-                    split_ratio
-                )
+        adjusted_price = adjust_etf_price(
+            stock_code,
+            trade_date,
+            close_price,
+        )
 
         if (
             pd.notna(trade_date)
-            and pd.notna(close_price)
+            and pd.notna(adjusted_price)
         ):
             records.append(
                 {
                     "date": trade_date,
-                    "nav": close_price,
+                    "nav": adjusted_price,
                 }
             )
 
-    return norm(
+    return normalize_history(
         pd.DataFrame(records)
     )
 
@@ -619,12 +555,12 @@ def twse_month(
     ttl=3600,
     show_spinner=False,
 )
-def etf_history(
-    code,
-    end_date,
+def fetch_etf_history(
+    stock_code,
+    selected_date,
 ):
     end_date = pd.Timestamp(
-        end_date
+        selected_date
     )
 
     start_date = (
@@ -649,30 +585,24 @@ def etf_history(
 
     frames = []
 
-    while (
-        current_month
-        <= ending_month
-    ):
-
-        monthly_data = twse_month(
-            code,
+    while current_month <= ending_month:
+        monthly_data = fetch_twse_month(
+            stock_code,
             current_month.year,
             current_month.month,
         )
 
         if not monthly_data.empty:
-            frames.append(
-                monthly_data
-            )
+            frames.append(monthly_data)
 
         current_month += (
             pd.offsets.MonthBegin(1)
         )
 
     if not frames:
-        return empty()
+        return empty_history()
 
-    history = norm(
+    history = normalize_history(
         pd.concat(
             frames,
             ignore_index=True,
@@ -680,31 +610,30 @@ def etf_history(
     )
 
     return history[
-        history["date"]
-        <= end_date
+        history["date"] <= end_date
     ].reset_index(drop=True)
 
 
 # ============================================================
-# CSV資料及品質檢核
+# CSV讀取及品質檢核
 # ============================================================
 
 @st.cache_data(
     ttl=300,
     show_spinner=False,
 )
-def load_csv():
-    report = {
-        "exists": CSV.exists(),
-        "columns": False,
-        "bad_date": 0,
-        "bad_nav": 0,
-        "duplicates": 0,
-        "unknown": [],
-        "missing": [],
+def load_fund_csv():
+    quality_report = {
+        "exists": LOCAL_FUND_FILE.exists(),
+        "columns_ok": False,
+        "invalid_dates": 0,
+        "invalid_nav": 0,
+        "duplicate_rows": 0,
+        "unknown_codes": [],
+        "missing_codes": [],
     }
 
-    blank = pd.DataFrame(
+    empty_result = pd.DataFrame(
         columns=[
             "date",
             "code",
@@ -713,8 +642,8 @@ def load_csv():
         ]
     )
 
-    if not CSV.exists():
-        return blank, report
+    if not LOCAL_FUND_FILE.exists():
+        return empty_result, quality_report
 
     raw_data = None
 
@@ -724,54 +653,63 @@ def load_csv():
         "cp950",
         "big5",
     ]:
-
         try:
             raw_data = pd.read_csv(
-                CSV,
+                LOCAL_FUND_FILE,
                 encoding=encoding,
                 dtype={
                     "code": str,
                 },
             )
+
             break
 
         except Exception:
             continue
 
     if raw_data is None:
-        return blank, report
+        return empty_result, quality_report
 
     raw_data.columns = [
         str(column).strip()
-        for column
-        in raw_data.columns
+        for column in raw_data.columns
     ]
 
     raw_data = raw_data.rename(
         columns={
             "日期": "date",
             "Date": "date",
+            "DATE": "date",
             "基金代碼": "code",
             "代碼": "code",
+            "Code": "code",
+            "CODE": "code",
             "基金名稱": "name",
             "名稱": "name",
+            "Name": "name",
+            "NAME": "name",
             "淨值": "nav",
             "基金淨值": "nav",
             "NAV": "nav",
+            "Nav": "nav",
         }
     )
 
-    report["columns"] = {
+    required_columns = {
         "date",
         "code",
         "name",
         "nav",
-    }.issubset(
-        raw_data.columns
+    }
+
+    quality_report["columns_ok"] = (
+        required_columns.issubset(
+            raw_data.columns
+        )
     )
 
-    if not report["columns"]:
-        return blank, report
+    if not quality_report["columns_ok"]:
+        return empty_result, quality_report
 
     parsed_dates = pd.to_datetime(
         raw_data["date"],
@@ -783,24 +721,19 @@ def load_csv():
         errors="coerce",
     )
 
-    report["bad_date"] = int(
+    quality_report["invalid_dates"] = int(
         parsed_dates.isna().sum()
     )
 
-    report["bad_nav"] = int(
+    quality_report["invalid_nav"] = int(
         (
             parsed_nav.isna()
             | (parsed_nav <= 0)
         ).sum()
     )
 
-    raw_data["date"] = (
-        parsed_dates
-    )
-
-    raw_data["nav"] = (
-        parsed_nav
-    )
+    raw_data["date"] = parsed_dates
+    raw_data["nav"] = parsed_nav
 
     raw_data["code"] = (
         raw_data["code"]
@@ -815,7 +748,9 @@ def load_csv():
         .str.strip()
     )
 
-    report["duplicates"] = int(
+    quality_report[
+        "duplicate_rows"
+    ] = int(
         raw_data.duplicated(
             subset=[
                 "code",
@@ -830,13 +765,17 @@ def load_csv():
         .unique()
     )
 
-    report["unknown"] = sorted(
+    quality_report[
+        "unknown_codes"
+    ] = sorted(
         valid_codes
-        - FUND_CODES
+        - EXPECTED_FUND_CODES
     )
 
-    report["missing"] = sorted(
-        FUND_CODES
+    quality_report[
+        "missing_codes"
+    ] = sorted(
+        EXPECTED_FUND_CODES
         - valid_codes
     )
 
@@ -867,6 +806,7 @@ def load_csv():
             ],
             keep="last",
         )
+        .reset_index(drop=True)
     )
 
     return (
@@ -877,34 +817,38 @@ def load_csv():
                 "name",
                 "nav",
             ]
-        ].reset_index(drop=True),
-        report,
+        ],
+        quality_report,
     )
 
 
-def local_history(
-    code,
-    name,
-    data,
+def get_local_fund_history(
+    fund_code,
+    fund_name,
+    local_data,
 ):
-    result = data[
-        data["code"] == code
+    if local_data.empty:
+        return empty_history()
+
+    result = local_data[
+        local_data["code"]
+        == fund_code
     ].copy()
 
     if result.empty:
-
-        result = data[
-            data["name"].str.contains(
-                name,
+        result = local_data[
+            local_data["name"]
+            .str.contains(
+                fund_name,
                 regex=False,
                 na=False,
             )
         ].copy()
 
     if result.empty:
-        return empty()
+        return empty_history()
 
-    return norm(
+    return normalize_history(
         result[
             [
                 "date",
@@ -918,60 +862,64 @@ def local_history(
 # 共同基金線上資料
 # ============================================================
 
-def parse_tables(
-    html_text,
-):
+def flatten_column_name(column):
+    if isinstance(column, tuple):
+        return " ".join(
+            map(str, column)
+        ).strip()
+
+    return str(column).strip()
+
+
+def find_date_nav_columns(table):
+    date_column = None
+    nav_column = None
+
+    for column in table.columns:
+        column_text = flatten_column_name(
+            column
+        )
+
+        if (
+            date_column is None
+            and "日期" in column_text
+        ):
+            date_column = column
+
+        if (
+            nav_column is None
+            and "淨值" in column_text
+            and "日期" not in column_text
+            and "最高" not in column_text
+            and "最低" not in column_text
+            and "漲跌" not in column_text
+        ):
+            nav_column = column
+
+    return date_column, nav_column
+
+
+def parse_fund_tables(html_text):
     records = []
 
     try:
         tables = pd.read_html(
             StringIO(html_text)
         )
+
     except Exception:
         tables = []
 
     for table in tables:
+        if table.empty:
+            continue
 
-        date_column = None
-        nav_column = None
-
-        for column in table.columns:
-
-            if isinstance(
-                column,
-                tuple,
-            ):
-                column_text = (
-                    " ".join(
-                        map(str, column)
-                    )
-                )
-            else:
-                column_text = str(
-                    column
-                )
-
-            if (
-                date_column is None
-                and "日期"
-                in column_text
-            ):
-                date_column = column
-
-            if (
-                nav_column is None
-                and "淨值"
-                in column_text
-                and "日期"
-                not in column_text
-                and "最高"
-                not in column_text
-                and "最低"
-                not in column_text
-                and "漲跌"
-                not in column_text
-            ):
-                nav_column = column
+        (
+            date_column,
+            nav_column,
+        ) = find_date_nav_columns(
+            table
+        )
 
         if (
             date_column is None
@@ -980,17 +928,14 @@ def parse_tables(
             continue
 
         for _, row in table.iterrows():
-
-            parsed_date = parse_date(
-                row.get(
-                    date_column
+            parsed_date = (
+                parse_roc_or_ad_date(
+                    row.get(date_column)
                 )
             )
 
-            nav_value = num(
-                row.get(
-                    nav_column
-                )
+            nav_value = safe_float(
+                row.get(nav_column)
             )
 
             if (
@@ -999,14 +944,12 @@ def parse_tables(
             ):
                 records.append(
                     {
-                        "date": (
-                            parsed_date
-                        ),
+                        "date": parsed_date,
                         "nav": nav_value,
                     }
                 )
 
-    return norm(
+    return normalize_history(
         pd.DataFrame(records)
     )
 
@@ -1015,15 +958,14 @@ def parse_tables(
     ttl=1800,
     show_spinner=False,
 )
-def fund_url(url):
+def fetch_fund_url(url):
     last_error = None
 
     for attempt in range(3):
-
         try:
             response = requests.get(
                 url,
-                headers=HEADERS,
+                headers=REQUEST_HEADERS,
                 timeout=45,
             )
 
@@ -1034,7 +976,7 @@ def fund_url(url):
                 or response.encoding
             )
 
-            result = parse_tables(
+            result = parse_fund_tables(
                 response.text
             )
 
@@ -1042,7 +984,7 @@ def fund_url(url):
                 return result, None
 
             return (
-                empty(),
+                empty_history(),
                 (
                     "頁面可開啟，"
                     "但沒有解析到日期與淨值"
@@ -1058,7 +1000,7 @@ def fund_url(url):
                 )
 
     return (
-        empty(),
+        empty_history(),
         (
             f"{type(last_error).__name__}: "
             f"{last_error}"
@@ -1070,43 +1012,34 @@ def fund_url(url):
     ttl=1800,
     show_spinner=False,
 )
-def online_history(urls):
+def fetch_online_fund_history(urls):
     frames = []
     errors = []
     successful_urls = []
 
     for url in urls:
-
-        data, error = fund_url(
+        data, error = fetch_fund_url(
             url
         )
 
         if not data.empty:
-
-            frames.append(
-                data
-            )
-
-            successful_urls.append(
-                url
-            )
+            frames.append(data)
+            successful_urls.append(url)
 
         elif error:
-
             errors.append(
                 f"{url}：{error}"
             )
 
     if not frames:
-
         return (
-            empty(),
+            empty_history(),
             errors,
             successful_urls,
         )
 
     return (
-        norm(
+        normalize_history(
             pd.concat(
                 frames,
                 ignore_index=True,
@@ -1117,42 +1050,30 @@ def online_history(urls):
     )
 
 
-def merge(
-    local_data,
-    online_data,
+def merge_fund_histories(
+    local_history,
+    online_history,
 ):
     frames = []
 
-    if not local_data.empty:
-
+    if not local_history.empty:
         local_copy = (
-            local_data.copy()
+            local_history.copy()
         )
 
-        local_copy[
-            "priority"
-        ] = 1
+        local_copy["priority"] = 1
+        frames.append(local_copy)
 
-        frames.append(
-            local_copy
-        )
-
-    if not online_data.empty:
-
+    if not online_history.empty:
         online_copy = (
-            online_data.copy()
+            online_history.copy()
         )
 
-        online_copy[
-            "priority"
-        ] = 2
-
-        frames.append(
-            online_copy
-        )
+        online_copy["priority"] = 2
+        frames.append(online_copy)
 
     if not frames:
-        return empty()
+        return empty_history()
 
     combined = pd.concat(
         frames,
@@ -1173,7 +1094,7 @@ def merge(
         )
     )
 
-    return norm(
+    return normalize_history(
         combined[
             [
                 "date",
@@ -1184,18 +1105,16 @@ def merge(
 
 
 # ============================================================
-# 績效計算
+# 績效及風險計算
 # ============================================================
 
-def before(
+def get_value_on_or_before(
     history,
     target_date,
 ):
     available = history[
         history["date"]
-        <= pd.Timestamp(
-            target_date
-        )
+        <= pd.Timestamp(target_date)
     ]
 
     if available.empty:
@@ -1203,51 +1122,48 @@ def before(
 
     row = available.iloc[-1]
 
-    return (
-        row["date"],
-        row["nav"],
-    )
+    return row["date"], row["nav"]
 
 
-def period_return(
+def calculate_period_return(
     history,
     current_value,
     target_date,
-    max_gap=10,
+    maximum_gap_days=10,
 ):
-    base_date, base_value = before(
-        history,
-        target_date,
+    base_date, base_value = (
+        get_value_on_or_before(
+            history,
+            target_date,
+        )
     )
 
     if base_date is None:
         return np.nan
 
     gap_days = (
-        pd.Timestamp(
-            target_date
-        )
-        - base_date
+        pd.Timestamp(target_date)
+        - pd.Timestamp(base_date)
     ).days
 
-    if not (
-        0
-        <= gap_days
-        <= max_gap
+    if (
+        gap_days < 0
+        or gap_days
+        > maximum_gap_days
     ):
         return np.nan
 
-    return pct(
+    return calculate_return(
         current_value,
         base_value,
     )
 
 
-def performance(
+def calculate_performance(
     history,
     selected_date,
 ):
-    history = norm(
+    history = normalize_history(
         history
     )
 
@@ -1257,7 +1173,7 @@ def performance(
     (
         current_date,
         current_value,
-    ) = before(
+    ) = get_value_on_or_before(
         history,
         selected_date,
     )
@@ -1270,13 +1186,11 @@ def performance(
         < current_date
     ]
 
-    if previous_data.empty:
-        previous_value = np.nan
-    else:
-        previous_value = (
-            previous_data
-            .iloc[-1]["nav"]
-        )
+    previous_value = (
+        previous_data.iloc[-1]["nav"]
+        if not previous_data.empty
+        else np.nan
+    )
 
     month_target = (
         current_date.replace(day=1)
@@ -1295,58 +1209,48 @@ def performance(
     return {
         "date": current_date,
         "value": current_value,
-        "Daily": pct(
+        "Daily": calculate_return(
             current_value,
             previous_value,
         ),
-        "MTD": period_return(
+        "MTD": calculate_period_return(
             history,
             current_value,
             month_target,
         ),
-        "YTD": period_return(
+        "YTD": calculate_period_return(
             history,
             current_value,
             year_target,
         ),
-        "1Y累積": period_return(
+        "1Y累積": calculate_period_return(
             history,
             current_value,
             current_date
-            - pd.DateOffset(
-                years=1
-            ),
+            - pd.DateOffset(years=1),
         ),
-        "2Y累積": period_return(
+        "2Y累積": calculate_period_return(
             history,
             current_value,
             current_date
-            - pd.DateOffset(
-                years=2
-            ),
+            - pd.DateOffset(years=2),
         ),
-        "3Y累積": period_return(
+        "3Y累積": calculate_period_return(
             history,
             current_value,
             current_date
-            - pd.DateOffset(
-                years=3
-            ),
+            - pd.DateOffset(years=3),
         ),
     }
 
 
-# ============================================================
-# 期間及風險計算
-# ============================================================
-
-def slice_period(
+def filter_period(
     history,
-    end_date,
+    selected_date,
     period_name,
 ):
     end_date = pd.Timestamp(
-        end_date
+        selected_date
     )
 
     offsets = {
@@ -1379,11 +1283,15 @@ def slice_period(
             <= end_date
         ].copy()
 
+    start_date = (
+        end_date
+        - offsets[period_name]
+    )
+
     return history[
         (
             history["date"]
-            >= end_date
-            - offsets[period_name]
+            >= start_date
         )
         & (
             history["date"]
@@ -1392,15 +1300,15 @@ def slice_period(
     ].copy()
 
 
-def risk_metrics(
+def calculate_risk_metrics(
     history,
     risk_free_rate,
 ):
-    history = norm(
+    history = normalize_history(
         history
     )
 
-    returns = (
+    daily_returns = (
         history["nav"]
         .pct_change()
         .replace(
@@ -1413,11 +1321,14 @@ def risk_metrics(
         .dropna()
     )
 
-    if len(returns) < MIN_RISK:
+    if (
+        len(daily_returns)
+        < MIN_RISK_OBSERVATIONS
+    ):
         return None
 
-    years = (
-        len(returns)
+    observation_years = (
+        len(daily_returns)
         / 252
     )
 
@@ -1428,19 +1339,23 @@ def risk_metrics(
     )
 
     if (
-        years > 0
+        observation_years > 0
         and 1 + total_return > 0
     ):
         annual_return = (
             (1 + total_return)
-            ** (1 / years)
+            ** (
+                1
+                / observation_years
+            )
             - 1
         )
+
     else:
         annual_return = np.nan
 
     annual_volatility = (
-        returns.std()
+        daily_returns.std()
         * np.sqrt(252)
     )
 
@@ -1471,9 +1386,7 @@ def risk_metrics(
         "Sharpe Ratio": (
             sharpe_ratio
         ),
-        "資料筆數": len(
-            history
-        ),
+        "資料筆數": len(history),
     }
 
 
@@ -1482,7 +1395,6 @@ def risk_metrics(
 # ============================================================
 
 with st.sidebar:
-
     st.title("📊 分析選單")
 
     page = st.radio(
@@ -1495,7 +1407,7 @@ with st.sidebar:
         ],
     )
 
-    selected = st.date_input(
+    selected_date = st.date_input(
         "查詢日期",
         value=date.today(),
         max_value=date.today(),
@@ -1525,21 +1437,19 @@ with st.sidebar:
         ],
     )
 
-    risk_free_rate = (
-        st.number_input(
-            "無風險利率（年化%）",
-            min_value=0.0,
-            max_value=10.0,
-            value=1.5,
-            step=0.1,
-        )
+    risk_free_rate = st.number_input(
+        "無風險利率（年化%）",
+        min_value=0.0,
+        max_value=10.0,
+        value=1.5,
+        step=0.1,
     )
 
     st.divider()
 
     st.info(
         "下次預計更新："
-        f"{next_update()}"
+        f"{get_next_update_text()}"
         "（台灣時間）"
     )
 
@@ -1550,15 +1460,17 @@ with st.sidebar:
 
 
 # ============================================================
-# 載入及處理資料
+# 資料載入
 # ============================================================
 
-local_data, quality = load_csv()
+local_fund_data, quality_report = (
+    load_fund_csv()
+)
 
-results = []
+result_rows = []
 histories = {}
 diagnostics = []
-statuses = []
+status_rows = []
 
 progress_bar = st.progress(
     0,
@@ -1567,119 +1479,131 @@ progress_bar = st.progress(
 
 
 for index, (
-    code,
-    info,
+    product_code,
+    product_info,
 ) in enumerate(
     PRODUCTS.items()
 ):
-
-    if info["type"] == "ETF":
-
-        history = etf_history(
-            code,
-            selected,
+    if product_info["type"] == "ETF":
+        history = fetch_etf_history(
+            product_code,
+            selected_date,
         )
 
         product_type = "ETF"
-        source = "TWSE"
+        data_source = "TWSE"
 
     else:
-
-        local_fund = local_history(
-            code,
-            info["name"],
-            local_data,
+        local_history = (
+            get_local_fund_history(
+                product_code,
+                product_info["name"],
+                local_fund_data,
+            )
         )
 
         (
-            online_fund,
-            errors,
+            online_history,
+            source_errors,
             successful_urls,
-        ) = online_history(
-            tuple(
-                info["urls"]
+        ) = (
+            fetch_online_fund_history(
+                tuple(
+                    product_info["urls"]
+                )
             )
         )
 
-        history = merge(
-            local_fund,
-            online_fund,
+        history = merge_fund_histories(
+            local_history,
+            online_history,
         )
 
-        product_type = (
-            "共同基金"
-        )
+        product_type = "共同基金"
 
         if (
-            not local_fund.empty
-            and not online_fund.empty
+            not local_history.empty
+            and not online_history.empty
         ):
-            source = (
+            data_source = (
                 "線上資料 + CSV"
             )
-        elif not online_fund.empty:
-            source = (
+
+        elif not online_history.empty:
+            data_source = (
                 "線上基金資料"
             )
-        elif not local_fund.empty:
-            source = "CSV"
+
+        elif not local_history.empty:
+            data_source = "CSV"
+
         else:
-            source = "無可用資料"
+            data_source = (
+                "無可用資料"
+            )
 
         diagnostics.append(
             {
-                "name": info["name"],
-                "online": len(
-                    online_fund
+                "name": (
+                    product_info["name"]
                 ),
-                "csv": len(
-                    local_fund
+                "online_rows": len(
+                    online_history
                 ),
-                "start": (
-                    online_fund[
+                "csv_rows": len(
+                    local_history
+                ),
+                "first_date": (
+                    online_history[
                         "date"
                     ].min()
                     if not
-                    online_fund.empty
+                    online_history.empty
                     else None
                 ),
-                "end": (
-                    online_fund[
+                "last_date": (
+                    online_history[
                         "date"
                     ].max()
                     if not
-                    online_fund.empty
+                    online_history.empty
                     else None
                 ),
-                "ok": (
+                "successful_urls": (
                     successful_urls
                 ),
-                "errors": errors,
+                "errors": (
+                    source_errors
+                ),
             }
         )
 
-    history = norm(
+    history = normalize_history(
         history
     )
 
     history = history[
         history["date"]
-        <= pd.Timestamp(selected)
+        <= pd.Timestamp(
+            selected_date
+        )
     ].copy()
 
     histories[
-        info["name"]
+        product_info["name"]
     ] = history
 
     product_performance = (
-        performance(
+        calculate_performance(
             history,
-            selected,
+            selected_date,
         )
     )
 
     result_row = {
-        "商品名稱": info["name"],
+        "商品名稱": (
+            product_info["name"]
+        ),
         "類型": product_type,
         "資料日期": "-",
         "價格／淨值": np.nan,
@@ -1689,11 +1613,10 @@ for index, (
         "1Y累積": np.nan,
         "2Y累積": np.nan,
         "3Y累積": np.nan,
-        "資料來源": source,
+        "資料來源": data_source,
     }
 
     if product_performance:
-
         result_row.update(
             {
                 "資料日期": (
@@ -1715,41 +1638,42 @@ for index, (
                         ]
                     )
                     for period
-                    in PERIODS
+                    in PERIOD_COLUMNS
                 },
             }
         )
 
-    results.append(
+    result_rows.append(
         result_row
     )
 
     if history.empty:
-
         latest_product_date = None
-        status_text = "無資料"
+        data_status = "無資料"
 
     else:
-
         latest_product_date = (
             history["date"].max()
         )
 
         age_days = (
-            pd.Timestamp(selected)
+            pd.Timestamp(
+                selected_date
+            )
             - latest_product_date
         ).days
 
-        if age_days <= 3:
-            status_text = "正常"
-        else:
-            status_text = (
-                "資料較舊"
-            )
+        data_status = (
+            "正常"
+            if age_days <= 3
+            else "資料較舊"
+        )
 
-    statuses.append(
+    status_rows.append(
         {
-            "商品名稱": info["name"],
+            "商品名稱": (
+                product_info["name"]
+            ),
             "類型": product_type,
             "最新資料日期": (
                 latest_product_date
@@ -1758,13 +1682,9 @@ for index, (
                 is not None
                 else "-"
             ),
-            "資料筆數": len(
-                history
-            ),
-            "資料來源": source,
-            "資料狀態": (
-                status_text
-            ),
+            "資料筆數": len(history),
+            "資料來源": data_source,
+            "資料狀態": data_status,
         }
     )
 
@@ -1775,24 +1695,24 @@ for index, (
         / len(PRODUCTS),
         text=(
             "正在處理 "
-            f"{info['name']}…"
+            f"{product_info['name']}…"
         ),
     )
 
 
 progress_bar.empty()
 
-result = pd.DataFrame(
-    results
+result_df = pd.DataFrame(
+    result_rows
 )
 
-status = pd.DataFrame(
-    statuses
+status_df = pd.DataFrame(
+    status_rows
 )
 
 
 # ============================================================
-# 置中標題及摘要資訊
+# 置中標題與摘要
 # ============================================================
 
 st.markdown(
@@ -1825,48 +1745,47 @@ st.markdown(
 
 
 valid_dates = pd.to_datetime(
-    result.loc[
-        result["資料日期"]
+    result_df.loc[
+        result_df["資料日期"]
         != "-",
         "資料日期",
     ],
     errors="coerce",
 ).dropna()
 
-if valid_dates.empty:
-    latest_date = "-"
-else:
-    latest_date = (
-        valid_dates.max()
-        .strftime("%Y/%m/%d")
-    )
+latest_date_text = (
+    valid_dates.max()
+    .strftime("%Y/%m/%d")
+    if not valid_dates.empty
+    else "-"
+)
 
 
-metric_1, metric_2, \
-metric_3, metric_4 = (
+metric_col_1, metric_col_2, \
+metric_col_3, metric_col_4 = (
     st.columns(4)
 )
 
-metric_1.metric(
+metric_col_1.metric(
     "查詢日期",
     pd.Timestamp(
-        selected
+        selected_date
     ).strftime("%Y/%m/%d"),
 )
 
-metric_2.metric(
+metric_col_2.metric(
     "全體最新資料日",
-    latest_date,
+    latest_date_text,
 )
 
-metric_3.metric(
+metric_col_3.metric(
     "比較商品數",
-    len(result),
+    len(result_df),
 )
 
-metric_4.metric(
+metric_col_4.metric(
     "下次預計更新",
-    next_update(),
+    get_next_update_text(),
 )
 
 
@@ -1875,39 +1794,28 @@ metric_4.metric(
 # ============================================================
 
 if page == "📋 績效總覽":
-
     st.subheader(
         "📋 績效總覽"
     )
 
-    display = result.copy()
+    display_df = result_df.copy()
+    download_df = result_df.copy()
 
-    download_data = (
-        result.copy()
-    )
+    width_data = display_df.copy()
 
-    # 保留Daily原始數值，
-    # 供價格／淨值顏色判斷。
-    display[
-        "_Daily數值"
-    ] = (
-        display["Daily"]
-        .copy()
-    )
-
-    display[
+    width_data[
         "價格／淨值"
     ] = (
-        display[
+        width_data[
             "價格／淨值"
-        ].map(fmt_num)
+        ].map(format_number)
     )
 
-    display[
+    width_data[
         "Daily"
     ] = (
-        display["Daily"]
-        .map(fmt_daily)
+        width_data["Daily"]
+        .map(format_daily)
     )
 
     for period in [
@@ -1917,12 +1825,12 @@ if page == "📋 績效總覽":
         "2Y累積",
         "3Y累積",
     ]:
-        display[period] = (
-            display[period]
-            .map(fmt_pct)
+        width_data[period] = (
+            width_data[period]
+            .map(format_percentage)
         )
 
-    columns = [
+    display_columns = [
         "商品名稱",
         "類型",
         "資料日期",
@@ -1936,142 +1844,234 @@ if page == "📋 績效總覽":
         "資料來源",
     ]
 
-    # 欄寬以最長內容加5個字元計算
-    widths = {
-        column: auto_width(
-            display,
-            column,
-            extra=5,
-        )
-        for column in columns
+    column_widths = {
+        "商品名稱": automatic_column_width(
+            width_data,
+            "商品名稱",
+            extra_characters=5,
+            minimum_pixels=230,
+            maximum_pixels=420,
+        ),
+        "類型": automatic_column_width(
+            width_data,
+            "類型",
+            extra_characters=5,
+            minimum_pixels=85,
+            maximum_pixels=130,
+        ),
+        "資料日期": automatic_column_width(
+            width_data,
+            "資料日期",
+            extra_characters=5,
+            minimum_pixels=115,
+            maximum_pixels=150,
+        ),
+        "價格／淨值": automatic_column_width(
+            width_data,
+            "價格／淨值",
+            extra_characters=5,
+            minimum_pixels=115,
+            maximum_pixels=160,
+        ),
+        "Daily": automatic_column_width(
+            width_data,
+            "Daily",
+            extra_characters=5,
+            minimum_pixels=110,
+            maximum_pixels=145,
+        ),
+        "MTD": automatic_column_width(
+            width_data,
+            "MTD",
+            extra_characters=5,
+            minimum_pixels=95,
+            maximum_pixels=130,
+        ),
+        "YTD": automatic_column_width(
+            width_data,
+            "YTD",
+            extra_characters=5,
+            minimum_pixels=95,
+            maximum_pixels=130,
+        ),
+        "1Y累積": automatic_column_width(
+            width_data,
+            "1Y累積",
+            extra_characters=5,
+            minimum_pixels=100,
+            maximum_pixels=140,
+        ),
+        "2Y累積": automatic_column_width(
+            width_data,
+            "2Y累積",
+            extra_characters=5,
+            minimum_pixels=100,
+            maximum_pixels=140,
+        ),
+        "3Y累積": automatic_column_width(
+            width_data,
+            "3Y累積",
+            extra_characters=5,
+            minimum_pixels=100,
+            maximum_pixels=140,
+        ),
+        "資料來源": automatic_column_width(
+            width_data,
+            "資料來源",
+            extra_characters=5,
+            minimum_pixels=130,
+            maximum_pixels=220,
+        ),
     }
 
-    widths[
-        "商品名稱"
-    ] = auto_width(
-        display,
-        "商品名稱",
-        extra=5,
-        minimum=220,
-        maximum=420,
+    colgroup_html = "".join(
+        (
+            '<col style="width:'
+            f'{column_widths[column]}'
+            'px">'
+        )
+        for column
+        in display_columns
     )
 
-    widths[
-        "資料來源"
-    ] = auto_width(
-        display,
-        "資料來源",
-        extra=5,
-        minimum=120,
-        maximum=220,
+    header_html = "".join(
+        (
+            '<th style="'
+            "text-align:center;"
+            "white-space:nowrap;"
+            "padding:10px 12px;"
+            "background:#f3f4f6;"
+            "color:#4b5563;"
+            "border-bottom:"
+            "1px solid #d1d5db;"
+            "font-weight:600;"
+            '">'
+            f"{escape_html(column)}"
+            "</th>"
+        )
+        for column
+        in display_columns
     )
 
-    table_data = display[
-        [
-            *columns,
-            "_Daily數值",
+    body_rows = []
+
+    for _, row in display_df.iterrows():
+        daily_value = row["Daily"]
+
+        (
+            price_color,
+            price_bold,
+        ) = return_style(
+            daily_value
+        )
+
+        row_cells = [
+            make_table_cell(
+                row["商品名稱"],
+                alignment="left",
+            ),
+            make_table_cell(
+                row["類型"],
+                alignment="center",
+            ),
+            make_table_cell(
+                row["資料日期"],
+                alignment="center",
+            ),
+            make_table_cell(
+                format_number(
+                    row["價格／淨值"]
+                ),
+                alignment="right",
+                color=price_color,
+                bold=price_bold,
+            ),
         ]
-    ].copy()
 
-    styled = (
-        table_data.style
-
-        # 價格／淨值依Daily顯示紅綠
-        .apply(
-            row_price_color,
-            axis=1,
+        (
+            daily_color,
+            daily_bold,
+        ) = return_style(
+            daily_value
         )
 
-        # 所有期間報酬紅漲綠跌
-        .map(
-            value_color,
-            subset=PERIODS,
-        )
-
-        # 類型及資料日期置中
-        .set_properties(
-            subset=[
-                "類型",
-                "資料日期",
-            ],
-            **{
-                "text-align": (
-                    "center"
+        row_cells.append(
+            make_table_cell(
+                format_daily(
+                    daily_value
                 ),
-            },
+                alignment="right",
+                color=daily_color,
+                bold=daily_bold,
+            )
         )
 
-        # 價格與所有報酬率靠右
-        .set_properties(
-            subset=[
-                "價格／淨值",
-                "Daily",
-                "MTD",
-                "YTD",
-                "1Y累積",
-                "2Y累積",
-                "3Y累積",
-            ],
-            **{
-                "text-align": (
-                    "right"
-                ),
-                "font-variant-numeric": (
-                    "tabular-nums"
-                ),
-            },
-        )
+        for period in [
+            "MTD",
+            "YTD",
+            "1Y累積",
+            "2Y累積",
+            "3Y累積",
+        ]:
+            (
+                period_color,
+                period_bold,
+            ) = return_style(
+                row[period]
+            )
 
-        # 商品名稱與來源靠左
-        .set_properties(
-            subset=[
-                "商品名稱",
-                "資料來源",
-            ],
-            **{
-                "text-align": (
-                    "left"
-                ),
-            },
-        )
-
-        # 表頭置中
-        .set_table_styles(
-            [
-                {
-                    "selector": "th",
-                    "props": [
-                        (
-                            "text-align",
-                            "center",
-                        ),
-                    ],
-                },
-            ]
-        )
-
-        # 隱藏輔助欄位
-        .hide(
-            subset=[
-                "_Daily數值",
-            ],
-            axis="columns",
-        )
-    )
-
-    st.dataframe(
-        styled,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            column: (
-                st.column_config.TextColumn(
-                    column,
-                    width=widths[column],
+            row_cells.append(
+                make_table_cell(
+                    format_percentage(
+                        row[period]
+                    ),
+                    alignment="right",
+                    color=period_color,
+                    bold=period_bold,
                 )
             )
-            for column in columns
-        },
+
+        row_cells.append(
+            make_table_cell(
+                row["資料來源"],
+                alignment="left",
+            )
+        )
+
+        body_rows.append(
+            "<tr>"
+            + "".join(row_cells)
+            + "</tr>"
+        )
+
+    table_html = (
+        '<div style="'
+        "width:100%;"
+        "overflow-x:auto;"
+        "border:1px solid #e5e7eb;"
+        "border-radius:10px;"
+        "margin-bottom:12px;"
+        '">'
+        '<table style="'
+        "width:100%;"
+        "min-width:1280px;"
+        "border-collapse:collapse;"
+        "font-family:Arial,"
+        "Microsoft JhengHei,"
+        "sans-serif;"
+        "font-size:14px;"
+        "table-layout:fixed;"
+        '">'
+        f"<colgroup>{colgroup_html}</colgroup>"
+        f"<thead><tr>{header_html}</tr></thead>"
+        f"<tbody>{''.join(body_rows)}</tbody>"
+        "</table>"
+        "</div>"
+    )
+
+    st.markdown(
+        table_html,
+        unsafe_allow_html=True,
     )
 
     st.caption(
@@ -2082,8 +2082,7 @@ if page == "📋 績效總覽":
     )
 
     download_bytes = (
-        download_data
-        .to_csv(
+        download_df.to_csv(
             index=False,
         )
         .encode("utf-8-sig")
@@ -2094,7 +2093,7 @@ if page == "📋 績效總覽":
         data=download_bytes,
         file_name=(
             "performance_"
-            f"{pd.Timestamp(selected):%Y%m%d}"
+            f"{pd.Timestamp(selected_date):%Y%m%d}"
             ".csv"
         ),
         mime="text/csv",
@@ -2106,7 +2105,6 @@ if page == "📋 績效總覽":
 # ============================================================
 
 elif page == "📈 走勢分析":
-
     st.subheader(
         "📈 走勢分析"
     )
@@ -2119,18 +2117,17 @@ elif page == "📈 走勢分析":
         product_name,
         history,
     ) in histories.items():
-
-        sliced = slice_period(
+        period_data = filter_period(
             history,
-            selected,
+            selected_date,
             chart_period,
         )
 
-        if sliced.empty:
+        if period_data.empty:
             continue
 
         chart_data = (
-            sliced.copy()
+            period_data.copy()
         )
 
         chart_data[
@@ -2142,17 +2139,16 @@ elif page == "📈 走勢分析":
         )
 
         first_value = (
-            sliced.iloc[0]["nav"]
+            period_data.iloc[0]["nav"]
         )
 
         last_value = (
-            sliced.iloc[-1]["nav"]
+            period_data.iloc[-1]["nav"]
         )
 
         if first_value > 0:
-
             normalized_data = (
-                sliced.copy()
+                period_data.copy()
             )
 
             normalized_data[
@@ -2177,7 +2173,7 @@ elif page == "📈 走勢分析":
                         product_name
                     ),
                     "區間累積報酬率": (
-                        pct(
+                        calculate_return(
                             last_value,
                             first_value,
                         )
@@ -2190,35 +2186,39 @@ elif page == "📈 走勢分析":
     )
 
     if chart_frames:
-
-        chart_data = pd.concat(
+        combined_chart_data = pd.concat(
             chart_frames,
             ignore_index=True,
         )
 
-        figure = px.line(
-            chart_data,
+        price_figure = px.line(
+            combined_chart_data,
             x="date",
             y="nav",
             color="商品名稱",
             labels={
                 "date": "日期",
                 "nav": "價格／淨值",
+                "商品名稱": "商品",
             },
         )
 
-        figure.update_layout(
+        price_figure.update_layout(
             hovermode="x unified",
             height=520,
         )
 
         st.plotly_chart(
-            figure,
+            price_figure,
             use_container_width=True,
         )
 
-    else:
+        st.caption(
+            "原始價格及淨值尺度不同，"
+            "此圖適合查看各商品本身的走勢。"
+        )
 
+    else:
         st.info(
             "目前期間沒有可繪製資料。"
         )
@@ -2228,8 +2228,7 @@ elif page == "📈 走勢分析":
     )
 
     if interval_rows:
-
-        interval_data = (
+        interval_df = (
             pd.DataFrame(
                 interval_rows
             )
@@ -2239,8 +2238,8 @@ elif page == "📈 走勢分析":
             )
         )
 
-        figure = px.bar(
-            interval_data,
+        interval_figure = px.bar(
+            interval_df,
             x="商品名稱",
             y="區間累積報酬率",
             color="區間累積報酬率",
@@ -2248,20 +2247,24 @@ elif page == "📈 走勢分析":
                 "RdYlGn"
             ),
             text_auto=".2f",
+            labels={
+                "區間累積報酬率": (
+                    "累積報酬率 (%)"
+                ),
+            },
         )
 
-        figure.update_layout(
+        interval_figure.update_layout(
             height=480,
             coloraxis_showscale=False,
         )
 
         st.plotly_chart(
-            figure,
+            interval_figure,
             use_container_width=True,
         )
 
     else:
-
         st.info(
             "目前期間沒有足夠資料"
             "計算區間報酬。"
@@ -2273,37 +2276,42 @@ elif page == "📈 走勢分析":
     )
 
     if normalized_frames:
-
-        normalized_data = pd.concat(
+        normalized_df = pd.concat(
             normalized_frames,
             ignore_index=True,
         )
 
-        figure = px.line(
-            normalized_data,
+        normalized_figure = px.line(
+            normalized_df,
             x="date",
             y="標準化指數",
             color="商品名稱",
+            labels={
+                "date": "日期",
+                "標準化指數": (
+                    "起點 = 100"
+                ),
+                "商品名稱": "商品",
+            },
         )
 
-        figure.add_hline(
+        normalized_figure.add_hline(
             y=100,
             line_dash="dash",
             line_color="gray",
         )
 
-        figure.update_layout(
+        normalized_figure.update_layout(
             hovermode="x unified",
             height=520,
         )
 
         st.plotly_chart(
-            figure,
+            normalized_figure,
             use_container_width=True,
         )
 
     else:
-
         st.info(
             "目前期間沒有足夠資料"
             "建立標準化走勢。"
@@ -2315,9 +2323,14 @@ elif page == "📈 走勢分析":
 # ============================================================
 
 elif page == "⚖️ 風險分析":
-
     st.subheader(
         "⚖️ 風險與風險調整績效"
+    )
+
+    st.caption(
+        f"分析期間：{risk_period}；"
+        f"無風險利率：{risk_free_rate:.1f}%；"
+        f"至少需要{MIN_RISK_OBSERVATIONS}筆資料。"
     )
 
     risk_rows = []
@@ -2327,20 +2340,18 @@ elif page == "⚖️ 風險分析":
         product_name,
         history,
     ) in histories.items():
-
-        sliced = slice_period(
+        period_data = filter_period(
             history,
-            selected,
+            selected_date,
             risk_period,
         )
 
-        metrics = risk_metrics(
-            sliced,
+        metrics = calculate_risk_metrics(
+            period_data,
             risk_free_rate / 100,
         )
 
         if metrics:
-
             risk_rows.append(
                 {
                     "商品名稱": (
@@ -2353,51 +2364,57 @@ elif page == "⚖️ 風險分析":
             correlation_series[
                 product_name
             ] = (
-                sliced
+                period_data
                 .set_index("date")[
                     "nav"
                 ]
                 .pct_change()
-                .rename(
-                    product_name
-                )
+                .rename(product_name)
             )
 
     if not risk_rows:
-
         st.info(
             "目前沒有商品具備足夠資料"
             "計算風險指標。"
         )
 
     else:
-
-        risk_data = pd.DataFrame(
+        risk_df = pd.DataFrame(
             risk_rows
         )
 
-        figure = px.scatter(
-            risk_data,
+        st.markdown(
+            "#### 風險報酬散點圖"
+        )
+
+        risk_return_figure = px.scatter(
+            risk_df,
             x="年化波動率",
             y="年化報酬率",
             text="商品名稱",
             size="資料筆數",
             color="Sharpe Ratio",
-            color_continuous_scale=(
-                "RdYlGn"
-            ),
+            color_continuous_scale="RdYlGn",
+            labels={
+                "年化波動率": (
+                    "年化波動率 (%)"
+                ),
+                "年化報酬率": (
+                    "年化報酬率 (%)"
+                ),
+            },
         )
 
-        figure.update_traces(
+        risk_return_figure.update_traces(
             textposition="top center"
         )
 
-        figure.update_layout(
+        risk_return_figure.update_layout(
             height=550
         )
 
         st.plotly_chart(
-            figure,
+            risk_return_figure,
             use_container_width=True,
         )
 
@@ -2406,105 +2423,202 @@ elif page == "⚖️ 風險分析":
         )
 
         with risk_col_1:
+            st.markdown(
+                "#### 最大回撤"
+            )
 
-            figure = px.bar(
-                risk_data.sort_values(
+            drawdown_figure = px.bar(
+                risk_df.sort_values(
                     "最大回撤"
                 ),
                 x="最大回撤",
                 y="商品名稱",
                 orientation="h",
                 text_auto=".2f",
-                title="最大回撤",
+                color_discrete_sequence=[
+                    "#d95f59"
+                ],
+                labels={
+                    "最大回撤": (
+                        "最大回撤 (%)"
+                    ),
+                },
+            )
+
+            drawdown_figure.update_layout(
+                height=430
             )
 
             st.plotly_chart(
-                figure,
+                drawdown_figure,
                 use_container_width=True,
             )
 
         with risk_col_2:
+            st.markdown(
+                "#### 年化波動率"
+            )
 
-            figure = px.bar(
-                risk_data.sort_values(
+            volatility_figure = px.bar(
+                risk_df.sort_values(
                     "年化波動率"
                 ),
                 x="年化波動率",
                 y="商品名稱",
                 orientation="h",
                 text_auto=".2f",
-                title="年化波動率",
+                color_discrete_sequence=[
+                    "#4c78a8"
+                ],
+                labels={
+                    "年化波動率": (
+                        "年化波動率 (%)"
+                    ),
+                },
+            )
+
+            volatility_figure.update_layout(
+                height=430
             )
 
             st.plotly_chart(
-                figure,
+                volatility_figure,
                 use_container_width=True,
             )
 
-        figure = px.bar(
-            risk_data.sort_values(
+        st.markdown(
+            "#### Sharpe Ratio"
+        )
+
+        sharpe_figure = px.bar(
+            risk_df.sort_values(
                 "Sharpe Ratio",
                 ascending=False,
             ),
             x="商品名稱",
             y="Sharpe Ratio",
             color="Sharpe Ratio",
-            color_continuous_scale=(
-                "RdYlGn"
-            ),
+            color_continuous_scale="RdYlGn",
             text_auto=".2f",
-            title="Sharpe Ratio",
+        )
+
+        sharpe_figure.add_hline(
+            y=0,
+            line_color="gray",
+        )
+
+        sharpe_figure.update_layout(
+            height=470,
+            coloraxis_showscale=False,
         )
 
         st.plotly_chart(
-            figure,
+            sharpe_figure,
             use_container_width=True,
+        )
+
+        st.markdown(
+            "#### 每日報酬相關係數矩陣"
         )
 
         if (
             len(correlation_series)
             >= 2
         ):
-
-            correlation = pd.concat(
+            correlation_df = pd.concat(
                 correlation_series.values(),
                 axis=1,
             ).corr(
-                min_periods=MIN_RISK
+                min_periods=(
+                    MIN_RISK_OBSERVATIONS
+                )
             )
 
             if (
-                correlation
+                correlation_df
                 .notna()
                 .any()
                 .any()
             ):
+                correlation_figure = (
+                    px.imshow(
+                        correlation_df,
+                        text_auto=".2f",
+                        zmin=-1,
+                        zmax=1,
+                        color_continuous_scale=(
+                            "RdBu_r"
+                        ),
+                        labels={
+                            "color": (
+                                "相關係數"
+                            ),
+                        },
+                    )
+                )
 
-                figure = px.imshow(
-                    correlation,
-                    text_auto=".2f",
-                    zmin=-1,
-                    zmax=1,
-                    color_continuous_scale=(
-                        "RdBu_r"
-                    ),
-                    title=(
-                        "每日報酬"
-                        "相關係數矩陣"
-                    ),
+                correlation_figure.update_layout(
+                    height=600
                 )
 
                 st.plotly_chart(
-                    figure,
+                    correlation_figure,
                     use_container_width=True,
                 )
 
             else:
-
                 st.info(
                     "共同有效日期不足，"
                     "無法計算相關係數。"
                 )
+
+        else:
+            st.info(
+                "至少需要兩項商品具備"
+                "足夠資料才能計算相關係數。"
+            )
+
+        with st.expander(
+            "查看風險指標數據"
+        ):
+            display_risk_df = (
+                risk_df.copy()
+            )
+
+            for column in [
+                "年化報酬率",
+                "年化波動率",
+                "最大回撤",
+            ]:
+                display_risk_df[
+                    column
+                ] = (
+                    display_risk_df[
+                        column
+                    ].map(
+                        lambda value: (
+                            f"{value:.2f}%"
+                        )
+                    )
+                )
+
+            display_risk_df[
+                "Sharpe Ratio"
+            ] = (
+                display_risk_df[
+                    "Sharpe Ratio"
+                ].map(
+                    lambda value: (
+                        f"{value:.2f}"
+                    )
+                )
+            )
+
+            st.dataframe(
+                display_risk_df,
+                use_container_width=True,
+                hide_index=True,
+            )
 
 
 # ============================================================
@@ -2512,13 +2626,12 @@ elif page == "⚖️ 風險分析":
 # ============================================================
 
 else:
-
     st.subheader(
         "🔧 資料狀態"
     )
 
     st.dataframe(
-        status,
+        status_df,
         use_container_width=True,
         hide_index=True,
     )
@@ -2529,141 +2642,138 @@ else:
 
     quality_rows = [
         {
-            "檢核項目": (
-                "CSV檔案存在"
-            ),
+            "檢核項目": "CSV檔案存在",
             "結果": (
                 "正常"
-                if quality["exists"]
+                if quality_report["exists"]
                 else "異常"
             ),
-            "說明": str(CSV),
+            "說明": str(
+                LOCAL_FUND_FILE
+            ),
         },
         {
-            "檢核項目": (
-                "必要欄位"
-            ),
+            "檢核項目": "必要欄位",
             "結果": (
                 "正常"
-                if quality["columns"]
+                if quality_report[
+                    "columns_ok"
+                ]
                 else "異常"
             ),
             "說明": (
-                "date、code、"
-                "name、nav"
+                "date、code、name、nav"
             ),
         },
         {
-            "檢核項目": (
-                "無法解析日期"
-            ),
+            "檢核項目": "無法解析日期",
             "結果": (
                 "正常"
-                if quality["bad_date"]
-                == 0
-                else "提醒"
-            ),
-            "說明": (
-                f"{quality['bad_date']}筆"
-            ),
-        },
-        {
-            "檢核項目": (
-                "無效淨值"
-            ),
-            "結果": (
-                "正常"
-                if quality["bad_nav"]
-                == 0
-                else "提醒"
-            ),
-            "說明": (
-                f"{quality['bad_nav']}筆"
-            ),
-        },
-        {
-            "檢核項目": (
-                "重複資料"
-            ),
-            "結果": (
-                "正常"
-                if quality[
-                    "duplicates"
+                if quality_report[
+                    "invalid_dates"
                 ] == 0
                 else "提醒"
             ),
             "說明": (
-                f"{quality['duplicates']}筆"
+                f"{quality_report['invalid_dates']}"
+                "筆"
             ),
         },
         {
-            "檢核項目": (
-                "未知基金代碼"
-            ),
+            "檢核項目": "無效淨值",
             "結果": (
                 "正常"
-                if not quality[
-                    "unknown"
+                if quality_report[
+                    "invalid_nav"
+                ] == 0
+                else "提醒"
+            ),
+            "說明": (
+                f"{quality_report['invalid_nav']}"
+                "筆"
+            ),
+        },
+        {
+            "檢核項目": "重複資料",
+            "結果": (
+                "正常"
+                if quality_report[
+                    "duplicate_rows"
+                ] == 0
+                else "提醒"
+            ),
+            "說明": (
+                f"{quality_report['duplicate_rows']}"
+                "筆"
+            ),
+        },
+        {
+            "檢核項目": "未知基金代碼",
+            "結果": (
+                "正常"
+                if not quality_report[
+                    "unknown_codes"
                 ]
                 else "異常"
             ),
             "說明": (
                 "、".join(
-                    quality["unknown"]
+                    quality_report[
+                        "unknown_codes"
+                    ]
                 )
                 or "無"
             ),
         },
         {
-            "檢核項目": (
-                "基金代碼缺漏"
-            ),
+            "檢核項目": "基金代碼缺漏",
             "結果": (
                 "正常"
-                if not quality[
-                    "missing"
+                if not quality_report[
+                    "missing_codes"
                 ]
                 else "異常"
             ),
             "說明": (
                 "、".join(
-                    quality["missing"]
+                    quality_report[
+                        "missing_codes"
+                    ]
                 )
                 or "無"
             ),
         },
     ]
 
+    quality_df = pd.DataFrame(
+        quality_rows
+    )
+
     st.dataframe(
-        pd.DataFrame(
-            quality_rows
-        ),
+        quality_df,
         use_container_width=True,
         hide_index=True,
     )
 
     if any(
-        item["結果"] == "異常"
-        for item in quality_rows
+        row["結果"] == "異常"
+        for row in quality_rows
     ):
-
         st.error(
             "發現資料品質異常，"
             "請查看檢核說明。"
         )
 
     elif any(
-        item["結果"] == "提醒"
-        for item in quality_rows
+        row["結果"] == "提醒"
+        for row in quality_rows
     ):
-
         st.warning(
-            "資料可使用，但有需要"
-            "留意的品質提醒。"
+            "資料可使用，但有需要留意的"
+            "品質提醒。"
         )
 
     else:
-
         st.success(
             "資料品質檢核通過。"
         )
@@ -2678,21 +2788,15 @@ else:
         product_name,
         history,
     ) in histories.items():
-
         if history.empty:
-
             coverage_rows.append(
                 {
-                    "商品名稱": (
-                        product_name
-                    ),
+                    "商品名稱": product_name,
                     "最早日期": "-",
                     "最新日期": "-",
                     "最大日期缺口": "-",
                     "最大缺口區間": "-",
-                    "缺口提醒": (
-                        "無資料"
-                    ),
+                    "缺口提醒": "無資料",
                 }
             )
 
@@ -2712,31 +2816,29 @@ else:
         )
 
         if date_gaps.dropna().empty:
-
-            max_gap = 0
+            maximum_gap = 0
             gap_period = "-"
 
         else:
-
-            max_gap_index = (
+            maximum_gap_index = (
                 date_gaps.idxmax()
             )
 
-            max_gap = int(
+            maximum_gap = int(
                 date_gaps.loc[
-                    max_gap_index
+                    maximum_gap_index
                 ]
             )
 
             gap_start = (
                 sorted_dates.loc[
-                    max_gap_index - 1
+                    maximum_gap_index - 1
                 ]
             )
 
             gap_end = (
                 sorted_dates.loc[
-                    max_gap_index
+                    maximum_gap_index
                 ]
             )
 
@@ -2746,46 +2848,42 @@ else:
                 f"{gap_end:%Y/%m/%d}"
             )
 
-        if max_gap > 30:
+        if maximum_gap > 30:
             gap_status = "異常"
-        elif max_gap > 14:
+
+        elif maximum_gap > 14:
             gap_status = "提醒"
+
         else:
             gap_status = "正常"
 
         coverage_rows.append(
             {
-                "商品名稱": (
-                    product_name
-                ),
+                "商品名稱": product_name,
                 "最早日期": (
                     sorted_dates.min()
-                    .strftime(
-                        "%Y/%m/%d"
-                    )
+                    .strftime("%Y/%m/%d")
                 ),
                 "最新日期": (
                     sorted_dates.max()
-                    .strftime(
-                        "%Y/%m/%d"
-                    )
+                    .strftime("%Y/%m/%d")
                 ),
                 "最大日期缺口": (
-                    f"{max_gap}天"
+                    f"{maximum_gap}天"
                 ),
                 "最大缺口區間": (
                     gap_period
                 ),
-                "缺口提醒": (
-                    gap_status
-                ),
+                "缺口提醒": gap_status,
             }
         )
 
+    coverage_df = pd.DataFrame(
+        coverage_rows
+    )
+
     st.dataframe(
-        pd.DataFrame(
-            coverage_rows
-        ),
+        coverage_df,
         use_container_width=True,
         hide_index=True,
     )
@@ -2800,46 +2898,43 @@ else:
     with st.expander(
         "共同基金線上來源診斷"
     ):
-
         for item in diagnostics:
-
             st.markdown(
                 f"**{item['name']}**"
             )
 
             st.write(
                 "線上取得"
-                f"{item['online']}筆；"
+                f"{item['online_rows']}筆；"
                 "CSV取得"
-                f"{item['csv']}筆。"
+                f"{item['csv_rows']}筆。"
             )
 
             if (
-                item["start"]
+                item["first_date"]
                 is not None
             ):
-
                 st.write(
                     "線上期間："
-                    f"{item['start']:%Y/%m/%d}"
+                    f"{item['first_date']:%Y/%m/%d}"
                     " 至 "
-                    f"{item['end']:%Y/%m/%d}"
+                    f"{item['last_date']:%Y/%m/%d}"
                 )
 
-            if item["ok"]:
-
+            if item["successful_urls"]:
                 st.write(
                     "成功來源："
                 )
 
-                for url in item["ok"]:
+                for url in item[
+                    "successful_urls"
+                ]:
                     st.code(
                         url,
                         language="text",
                     )
 
             if item["errors"]:
-
                 st.write(
                     "來源錯誤或提醒："
                 )
@@ -2855,18 +2950,21 @@ else:
     with st.expander(
         "計算口徑與限制"
     ):
-
         st.markdown(
             """
 - ETF使用臺灣證券交易所市場收盤價，0050已調整2025年6月18日的1拆4。
 - 共同基金使用正式NAV，歷史資料由 `fund_nav_history.csv` 提供。
 - 線上近期資料與CSV同日期並存時，以線上資料優先。
 - Daily、MTD、YTD、1Y、2Y、3Y均為未含配息的累積報酬率。
-- 基準資料距目標日超過10天時，績效顯示「-」。
+- 基準資料距目標日期超過10天時，績效顯示「-」。
 - 風險指標至少需要60筆每日資料。
 """
         )
 
+
+# ============================================================
+# 頁尾
+# ============================================================
 
 st.divider()
 
