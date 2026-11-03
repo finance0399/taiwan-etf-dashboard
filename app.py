@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 import re
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, time as dt_time, timedelta
 from io import StringIO
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -16,81 +19,21 @@ import streamlit as st
 # ============================================================
 
 st.set_page_config(
-    page_title="台灣 ETF 及共同基金績效比較",
+    page_title="ETF及共同基金績效比較",
     page_icon="📊",
     layout="wide",
 )
 
-st.title("📊 台灣 ETF 及共同基金績效比較")
 
-st.caption(
-    "ETF 採分割調整後的市場收盤價，共同基金採正式 NAV；"
-    "Daily、MTD、YTD、1Y、2Y、3Y 均為未含配息的累積報酬率。"
+# ============================================================
+# 常數與商品設定
+# ============================================================
+
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+
+LOCAL_FUND_FILE = Path(
+    "fund_nav_history.csv"
 )
-
-
-# ============================================================
-# 商品設定
-# ============================================================
-
-PRODUCTS = {
-    "00981A": {
-        "name": "00981A 統一台股增長主動式ETF",
-        "type": "ETF",
-    },
-    "A09012": {
-        "name": "統一奔騰基金",
-        "type": "FUND",
-        "urls": [
-            "https://www.ezmoney.com.tw/funds/value/36",
-            (
-                "https://fund.hncb.com.tw/w/wr/"
-                "wr02_ACPS10-009007.djhtm"
-            ),
-            (
-                "https://www.moneydj.com/funddj/ya/"
-                "yp010000.djhtm?a=ACPS10"
-            ),
-        ],
-    },
-    "00407A": {
-        "name": "00407A 凱基台灣主動式ETF",
-        "type": "ETF",
-    },
-    "A41209": {
-        "name": "凱基台灣精五門基金",
-        "type": "FUND",
-        "urls": [
-            (
-                "https://fund.hncb.com.tw/w/wr/"
-                "wr02_ACKG15-014013.djhtm"
-            ),
-            (
-                "https://chbfund.moneydj.com/w/wr/"
-                "wr02.djhtm?A=ACKG15-9808"
-            ),
-            (
-                "https://tw.stock.yahoo.com/fund/"
-                "F0000040SC:FO/history"
-            ),
-        ],
-    },
-    "009816": {
-        "name": "009816 凱基台灣TOP 50 ETF",
-        "type": "ETF",
-    },
-    "0050": {
-        "name": "0050 元大台灣50",
-        "type": "ETF",
-    },
-}
-
-
-# ============================================================
-# 共用設定
-# ============================================================
-
-LOCAL_FUND_FILE = Path("fund_nav_history.csv")
 
 PERIOD_COLUMNS = [
     "Daily",
@@ -101,27 +44,115 @@ PERIOD_COLUMNS = [
     "3Y累積",
 ]
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 "
-        "Chrome/130.0.0.0 Safari/537.36"
-    ),
-    "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
+MIN_RISK_OBSERVATIONS = 60
+DEFAULT_RISK_FREE_RATE = 1.5
+
+FUND_CODES = {
+    "A09012",
+    "A41209",
+}
+
+EXPECTED_CSV_COLUMNS = {
+    "date",
+    "code",
+    "name",
+    "nav",
 }
 
 
-# ============================================================
-# ETF 分割還原設定
-# ============================================================
+PRODUCTS = {
+    "00981A": {
+        "name": (
+            "00981A "
+            "統一台股增長主動式ETF"
+        ),
+        "type": "ETF",
+    },
+    "A09012": {
+        "name": "統一奔騰基金",
+        "type": "FUND",
+        "urls": [
+            (
+                "https://www.ezmoney.com.tw/"
+                "funds/value/36"
+            ),
+            (
+                "https://fund.hncb.com.tw/"
+                "w/wr/"
+                "wr02_ACPS10-009007.djhtm"
+            ),
+            (
+                "https://www.moneydj.com/"
+                "funddj/ya/"
+                "yp010000.djhtm?a=ACPS10"
+            ),
+        ],
+    },
+    "00407A": {
+        "name": (
+            "00407A "
+            "凱基台灣主動式ETF"
+        ),
+        "type": "ETF",
+    },
+    "A41209": {
+        "name": "凱基台灣精五門基金",
+        "type": "FUND",
+        "urls": [
+            (
+                "https://fund.hncb.com.tw/"
+                "w/wr/"
+                "wr02_ACKG15-014013.djhtm"
+            ),
+            (
+                "https://chbfund.moneydj.com/"
+                "w/wr/"
+                "wr02.djhtm?A=ACKG15-9808"
+            ),
+            (
+                "https://tw.stock.yahoo.com/"
+                "fund/"
+                "F0000040SC:FO/history"
+            ),
+        ],
+    },
+    "009816": {
+        "name": (
+            "009816 "
+            "凱基台灣TOP 50 ETF"
+        ),
+        "type": "ETF",
+    },
+    "0050": {
+        "name": "0050 元大台灣50",
+        "type": "ETF",
+    },
+}
+
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 "
+        "(Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 "
+        "Chrome/130.0.0.0 "
+        "Safari/537.36"
+    ),
+    "Accept-Language": (
+        "zh-TW,zh;q=0.9,en;q=0.8"
+    ),
+}
+
 
 ETF_SPLIT_CONFIG = {
     "0050": [
         {
-            "effective_date": pd.Timestamp("2025-06-18"),
+            "effective_date": pd.Timestamp(
+                "2025-06-18"
+            ),
             "ratio": 4.0,
         }
-    ],
+    ]
 }
 
 
@@ -131,7 +162,10 @@ ETF_SPLIT_CONFIG = {
 
 def empty_history():
     return pd.DataFrame(
-        columns=["date", "nav"]
+        columns=[
+            "date",
+            "nav",
+        ]
     )
 
 
@@ -167,16 +201,21 @@ def safe_float(value):
 def normalize_history(data):
     """統一歷史資料格式。"""
 
-    if data is None or data.empty:
-        return empty_history()
-
-    if not {"date", "nav"}.issubset(
-        data.columns
+    if (
+        data is None
+        or data.empty
+        or not {
+            "date",
+            "nav",
+        }.issubset(data.columns)
     ):
         return empty_history()
 
     result = data[
-        ["date", "nav"]
+        [
+            "date",
+            "nav",
+        ]
     ].copy()
 
     result["date"] = pd.to_datetime(
@@ -189,7 +228,11 @@ def normalize_history(data):
             result["date"]
             .dt.tz_localize(None)
         )
-    except TypeError:
+
+    except (
+        TypeError,
+        AttributeError,
+    ):
         pass
 
     result["nav"] = (
@@ -198,11 +241,11 @@ def normalize_history(data):
     )
 
     result = result.dropna(
-        subset=["date", "nav"]
+        subset=[
+            "date",
+            "nav",
+        ]
     )
-
-    if result.empty:
-        return empty_history()
 
     result["date"] = (
         result["date"]
@@ -213,18 +256,16 @@ def normalize_history(data):
         result["nav"] > 0
     ]
 
-    result = result.sort_values(
-        "date"
+    result = (
+        result.sort_values("date")
+        .drop_duplicates(
+            subset=["date"],
+            keep="last",
+        )
+        .reset_index(drop=True)
     )
 
-    result = result.drop_duplicates(
-        subset=["date"],
-        keep="last",
-    )
-
-    return result.reset_index(
-        drop=True
-    )
+    return result
 
 
 def parse_roc_or_ad_date(value):
@@ -256,6 +297,7 @@ def parse_roc_or_ad_date(value):
             month=month,
             day=day,
         )
+
     except Exception:
         return pd.NaT
 
@@ -266,42 +308,36 @@ def adjust_etf_close_price(
     close_price,
 ):
     """
-    調整 ETF 分割造成的價格不連續。
+    調整ETF分割造成的價格不連續。
 
-    0050 在 2025-06-18 進行 1 拆 4，
-    因此該日期以前的原始收盤價除以 4。
+    0050於2025-06-18進行1拆4，
+    因此該日期以前的收盤價除以4。
     """
 
-    if pd.isna(trade_date):
-        return close_price
-
-    if pd.isna(close_price):
+    if (
+        pd.isna(trade_date)
+        or pd.isna(close_price)
+    ):
         return close_price
 
     adjusted_price = float(
         close_price
     )
 
-    split_events = ETF_SPLIT_CONFIG.get(
+    events = ETF_SPLIT_CONFIG.get(
         stock_code,
         [],
     )
 
-    for split_event in split_events:
+    for event in events:
 
-        effective_date = split_event[
-            "effective_date"
-        ]
-
-        split_ratio = split_event[
-            "ratio"
-        ]
-
-        if trade_date < effective_date:
-            adjusted_price = (
-                adjusted_price
-                / split_ratio
-            )
+        if (
+            trade_date
+            < event["effective_date"]
+        ):
+            adjusted_price /= event[
+                "ratio"
+            ]
 
     return adjusted_price
 
@@ -312,13 +348,11 @@ def pct_change(
 ):
     """計算累積報酬率。"""
 
-    if pd.isna(current_value):
-        return np.nan
-
-    if pd.isna(base_value):
-        return np.nan
-
-    if base_value == 0:
+    if (
+        pd.isna(current_value)
+        or pd.isna(base_value)
+        or base_value == 0
+    ):
         return np.nan
 
     return (
@@ -329,6 +363,7 @@ def pct_change(
 
 
 def format_number(value):
+
     if pd.isna(value):
         return "-"
 
@@ -340,6 +375,7 @@ def format_number(value):
 
 
 def format_pct(value):
+
     if pd.isna(value):
         return "-"
 
@@ -349,16 +385,15 @@ def format_pct(value):
 def performance_color(value):
     """台股習慣：紅漲、綠跌。"""
 
-    if not isinstance(value, str):
-        return ""
-
-    if value == "-":
+    if (
+        not isinstance(value, str)
+        or value == "-"
+    ):
         return ""
 
     try:
         number = float(
-            value
-            .replace("%", "")
+            value.replace("%", "")
             .replace("+", "")
         )
 
@@ -375,13 +410,105 @@ def performance_color(value):
             )
 
     except Exception:
-        return ""
+        pass
 
     return ""
 
 
 # ============================================================
-# ETF：臺灣證券交易所市場收盤價
+# 下次排程時間
+# ============================================================
+
+def next_scheduled_update(
+    now=None,
+):
+    """
+    台灣時間工作日：
+    19:00及21:30。
+    """
+
+    now = (
+        now
+        or datetime.now(TAIPEI_TZ)
+    )
+
+    scheduled_times = [
+        dt_time(19, 0),
+        dt_time(21, 30),
+    ]
+
+    if now.weekday() < 5:
+
+        for scheduled_time in (
+            scheduled_times
+        ):
+            candidate = (
+                datetime.combine(
+                    now.date(),
+                    scheduled_time,
+                    tzinfo=TAIPEI_TZ,
+                )
+            )
+
+            if now < candidate:
+                return candidate
+
+    next_day = (
+        now.date()
+        + timedelta(days=1)
+    )
+
+    while next_day.weekday() >= 5:
+        next_day += timedelta(days=1)
+
+    return datetime.combine(
+        next_day,
+        scheduled_times[0],
+        tzinfo=TAIPEI_TZ,
+    )
+
+
+def scheduled_update_text():
+
+    now = datetime.now(
+        TAIPEI_TZ
+    )
+
+    next_update = (
+        next_scheduled_update(now)
+    )
+
+    if (
+        next_update.date()
+        == now.date()
+    ):
+        prefix = "今日"
+
+    elif (
+        next_update.date()
+        == now.date()
+        + timedelta(days=1)
+    ):
+        prefix = "明日"
+
+    else:
+        weekdays = "一二三四五六日"
+
+        prefix = (
+            f"{next_update:%m/%d}"
+            f"（週"
+            f"{weekdays[next_update.weekday()]}"
+            f"）"
+        )
+
+    return (
+        f"{prefix} "
+        f"{next_update:%H:%M}"
+    )
+
+
+# ============================================================
+# ETF：臺灣證券交易所資料
 # ============================================================
 
 @st.cache_data(
@@ -393,7 +520,7 @@ def fetch_twse_month(
     year,
     month,
 ):
-    """取得 ETF 單月市場收盤價。"""
+    """取得ETF單月市場收盤價。"""
 
     url = (
         "https://www.twse.com.tw/"
@@ -402,7 +529,11 @@ def fetch_twse_month(
 
     params = {
         "response": "json",
-        "date": f"{year}{month:02d}01",
+        "date": (
+            f"{year}"
+            f"{month:02d}"
+            "01"
+        ),
         "stockNo": stock_code,
     }
 
@@ -438,6 +569,7 @@ def fetch_twse_month(
             "data",
             [],
         )
+
     except Exception:
         return empty_history()
 
@@ -458,24 +590,24 @@ def fetch_twse_month(
             row[6]
         )
 
-        adjusted_close_price = (
+        adjusted_price = (
             adjust_etf_close_price(
-                stock_code=stock_code,
-                trade_date=trade_date,
-                close_price=close_price,
+                stock_code,
+                trade_date,
+                close_price,
             )
         )
 
         if (
             pd.notna(trade_date)
             and pd.notna(
-                adjusted_close_price
+                adjusted_price
             )
         ):
             records.append(
                 {
                     "date": trade_date,
-                    "nav": adjusted_close_price,
+                    "nav": adjusted_price,
                 }
             )
 
@@ -488,16 +620,18 @@ def month_iterator(
     start_date,
     end_date,
 ):
+    """依月份產生查詢年月。"""
+
     current = pd.Timestamp(
-        year=start_date.year,
-        month=start_date.month,
-        day=1,
+        start_date.year,
+        start_date.month,
+        1,
     )
 
     ending = pd.Timestamp(
-        year=end_date.year,
-        month=end_date.month,
-        day=1,
+        end_date.year,
+        end_date.month,
+        1,
     )
 
     while current <= ending:
@@ -507,9 +641,8 @@ def month_iterator(
             current.month,
         )
 
-        current = (
-            current
-            + pd.offsets.MonthBegin(1)
+        current += (
+            pd.offsets.MonthBegin(1)
         )
 
 
@@ -521,7 +654,7 @@ def fetch_etf_history(
     stock_code,
     selected_date,
 ):
-    """取得 ETF 三年又兩個月價格資料。"""
+    """取得ETF約三年又兩個月資料。"""
 
     end_date = pd.Timestamp(
         selected_date
@@ -542,10 +675,12 @@ def fetch_etf_history(
         end_date,
     ):
 
-        monthly_data = fetch_twse_month(
-            stock_code,
-            year,
-            month,
+        monthly_data = (
+            fetch_twse_month(
+                stock_code,
+                year,
+                month,
+            )
         )
 
         if not monthly_data.empty:
@@ -566,7 +701,8 @@ def fetch_etf_history(
     )
 
     history = history[
-        history["date"] <= end_date
+        history["date"]
+        <= end_date
     ]
 
     return history.reset_index(
@@ -575,15 +711,31 @@ def fetch_etf_history(
 
 
 # ============================================================
-# 共同基金：讀取歷史 CSV
+# 共同基金：CSV讀取及品質檢核
 # ============================================================
 
 @st.cache_data(
     ttl=300,
     show_spinner=False,
 )
-def load_local_fund_history():
-    """讀取 fund_nav_history.csv。"""
+def inspect_and_load_fund_csv():
+    """
+    讀取CSV，同時記錄原始資料品質問題。
+    """
+
+    report = {
+        "exists": (
+            LOCAL_FUND_FILE.exists()
+        ),
+        "columns_ok": False,
+        "raw_rows": 0,
+        "invalid_dates": 0,
+        "invalid_nav": 0,
+        "duplicate_rows": 0,
+        "unknown_codes": [],
+        "missing_codes": [],
+        "error": None,
+    }
 
     empty_result = pd.DataFrame(
         columns=[
@@ -594,8 +746,17 @@ def load_local_fund_history():
         ]
     )
 
-    if not LOCAL_FUND_FILE.exists():
-        return empty_result
+    if not report["exists"]:
+
+        report["error"] = (
+            "找不到 "
+            "fund_nav_history.csv"
+        )
+
+        return (
+            empty_result,
+            report,
+        )
 
     data = None
 
@@ -610,7 +771,9 @@ def load_local_fund_history():
             data = pd.read_csv(
                 LOCAL_FUND_FILE,
                 encoding=encoding,
-                dtype={"code": str},
+                dtype={
+                    "code": str,
+                },
             )
 
             break
@@ -619,7 +782,18 @@ def load_local_fund_history():
             continue
 
     if data is None:
-        return empty_result
+
+        report["error"] = (
+            "CSV無法讀取或"
+            "編碼不支援"
+        )
+
+        return (
+            empty_result,
+            report,
+        )
+
+    report["raw_rows"] = len(data)
 
     data.columns = [
         str(column).strip()
@@ -648,21 +822,45 @@ def load_local_fund_history():
         columns=rename_map
     )
 
-    if not {
-        "date",
-        "code",
-        "nav",
-    }.issubset(data.columns):
+    report["columns_ok"] = (
+        EXPECTED_CSV_COLUMNS
+        .issubset(data.columns)
+    )
 
-        return empty_result
+    if not report["columns_ok"]:
 
-    if "name" not in data.columns:
-        data["name"] = ""
+        report["error"] = (
+            "缺少必要欄位："
+            "date、code、name、nav"
+        )
 
-    data["date"] = pd.to_datetime(
+        return (
+            empty_result,
+            report,
+        )
+
+    parsed_dates = pd.to_datetime(
         data["date"],
         errors="coerce",
     )
+
+    parsed_nav = pd.to_numeric(
+        data["nav"],
+        errors="coerce",
+    )
+
+    report["invalid_dates"] = int(
+        parsed_dates.isna().sum()
+    )
+
+    report["invalid_nav"] = int(
+        (
+            parsed_nav.isna()
+            | (parsed_nav <= 0)
+        ).sum()
+    )
+
+    data["date"] = parsed_dates
 
     data["code"] = (
         data["code"]
@@ -677,9 +875,31 @@ def load_local_fund_history():
         .str.strip()
     )
 
-    data["nav"] = (
-        data["nav"]
-        .apply(safe_float)
+    data["nav"] = parsed_nav
+
+    report["duplicate_rows"] = int(
+        data.duplicated(
+            subset=[
+                "code",
+                "date",
+            ]
+        ).sum()
+    )
+
+    valid_codes = set(
+        data["code"]
+        .dropna()
+        .unique()
+    )
+
+    report["unknown_codes"] = sorted(
+        valid_codes
+        - FUND_CODES
+    )
+
+    report["missing_codes"] = sorted(
+        FUND_CODES
+        - valid_codes
     )
 
     data = data.dropna(
@@ -694,42 +914,57 @@ def load_local_fund_history():
         data["nav"] > 0
     ]
 
-    data = data.sort_values(
-        ["code", "date"]
+    data = (
+        data.sort_values(
+            [
+                "code",
+                "date",
+            ]
+        )
+        .drop_duplicates(
+            subset=[
+                "code",
+                "date",
+            ],
+            keep="last",
+        )
+        .reset_index(drop=True)
     )
 
-    data = data.drop_duplicates(
-        subset=[
-            "code",
-            "date",
+    return (
+        data[
+            [
+                "date",
+                "code",
+                "name",
+                "nav",
+            ]
         ],
-        keep="last",
-    )
-
-    return data.reset_index(
-        drop=True
+        report,
     )
 
 
 def get_local_history(
     fund_code,
     fund_name,
+    local_data,
 ):
-    """取得指定共同基金歷史 NAV。"""
+    """取得指定共同基金的CSV歷史資料。"""
 
-    data = load_local_fund_history()
-
-    if data.empty:
+    if local_data.empty:
         return empty_history()
 
-    result = data[
-        data["code"] == fund_code
+    result = local_data[
+        local_data["code"]
+        == fund_code
     ].copy()
 
     if result.empty:
 
-        result = data[
-            data["name"].str.contains(
+        result = local_data[
+            local_data[
+                "name"
+            ].str.contains(
                 fund_name,
                 regex=False,
                 na=False,
@@ -741,27 +976,32 @@ def get_local_history(
 
     return normalize_history(
         result[
-            ["date", "nav"]
+            [
+                "date",
+                "nav",
+            ]
         ]
     )
 
 
 # ============================================================
-# 共同基金：線上近期 NAV
+# 共同基金：線上近期NAV
 # ============================================================
 
 def flatten_column_name(column):
+
     if isinstance(column, tuple):
 
         return " ".join(
-            str(part)
-            for part in column
+            map(str, column)
         ).strip()
 
     return str(column).strip()
 
 
-def choose_date_nav_columns(table):
+def choose_date_nav_columns(
+    table,
+):
     """尋找日期欄與淨值欄。"""
 
     date_column = None
@@ -797,8 +1037,10 @@ def choose_date_nav_columns(table):
     )
 
 
-def parse_fund_tables(html_text):
-    """解析基金日期與正式 NAV。"""
+def parse_fund_tables(
+    html_text,
+):
+    """解析基金頁面的日期及NAV。"""
 
     records = []
 
@@ -806,6 +1048,7 @@ def parse_fund_tables(html_text):
         tables = pd.read_html(
             StringIO(html_text)
         )
+
     except Exception:
         tables = []
 
@@ -831,7 +1074,9 @@ def parse_fund_tables(html_text):
 
             parsed_date = (
                 parse_roc_or_ad_date(
-                    row.get(date_column)
+                    row.get(
+                        date_column
+                    )
                 )
             )
 
@@ -845,7 +1090,9 @@ def parse_fund_tables(html_text):
             ):
                 records.append(
                     {
-                        "date": parsed_date,
+                        "date": (
+                            parsed_date
+                        ),
                         "nav": nav_value,
                     }
                 )
@@ -860,7 +1107,7 @@ def parse_fund_tables(html_text):
     show_spinner=False,
 )
 def fetch_fund_url(url):
-    """下載並解析基金近期 NAV。"""
+    """下載並解析基金近期NAV。"""
 
     response = None
     last_error = None
@@ -939,7 +1186,7 @@ def fetch_fund_url(url):
 def fetch_online_fund_history(
     urls,
 ):
-    """依序嘗試基金線上來源。"""
+    """依序嘗試線上基金來源。"""
 
     frames = []
     errors = []
@@ -947,8 +1194,8 @@ def fetch_online_fund_history(
 
     for url in urls:
 
-        data, error = fetch_fund_url(
-            url
+        data, error = (
+            fetch_fund_url(url)
         )
 
         if not data.empty:
@@ -960,6 +1207,7 @@ def fetch_online_fund_history(
             )
 
         elif error:
+
             errors.append(
                 f"{url}：{error}"
             )
@@ -977,12 +1225,8 @@ def fetch_online_fund_history(
         ignore_index=True,
     )
 
-    combined = normalize_history(
-        combined
-    )
-
     return (
-        combined,
+        normalize_history(combined),
         errors,
         successful_urls,
     )
@@ -993,9 +1237,9 @@ def merge_histories(
     online_history,
 ):
     """
-    合併歷史 CSV 與線上近期 NAV。
+    合併CSV及線上近期NAV。
 
-    同日期以線上資料優先。
+    相同日期以線上資料優先。
     """
 
     frames = []
@@ -1033,7 +1277,10 @@ def merge_histories(
     )
 
     merged = merged.sort_values(
-        ["date", "priority"]
+        [
+            "date",
+            "priority",
+        ]
     )
 
     merged = merged.drop_duplicates(
@@ -1043,13 +1290,16 @@ def merge_histories(
 
     return normalize_history(
         merged[
-            ["date", "nav"]
+            [
+                "date",
+                "nav",
+            ]
         ]
     )
 
 
 # ============================================================
-# 指定日期與績效計算
+# 績效計算
 # ============================================================
 
 def get_value_on_or_before(
@@ -1060,7 +1310,9 @@ def get_value_on_or_before(
 
     available = history[
         history["date"]
-        <= pd.Timestamp(target_date)
+        <= pd.Timestamp(
+            target_date
+        )
     ]
 
     if available.empty:
@@ -1080,11 +1332,7 @@ def calculate_period_return(
     target_date,
     maximum_gap_days=10,
 ):
-    """
-    使用目標日期以前最近資料計算累積報酬。
-
-    基準資料距離目標日期超過10天時不計算。
-    """
+    """計算指定期間累積報酬。"""
 
     (
         base_date,
@@ -1119,7 +1367,7 @@ def calculate_performance(
     history,
     selected_date,
 ):
-    """計算各期間未含配息累積報酬。"""
+    """計算各期間累積報酬。"""
 
     history = normalize_history(
         history
@@ -1146,6 +1394,7 @@ def calculate_performance(
 
     if previous_data.empty:
         previous_value = np.nan
+
     else:
         previous_value = (
             previous_data
@@ -1159,9 +1408,9 @@ def calculate_performance(
 
     year_target = (
         pd.Timestamp(
-            year=current_date.year,
-            month=1,
-            day=1,
+            current_date.year,
+            1,
+            1,
         )
         - timedelta(days=1)
     )
@@ -1169,67 +1418,305 @@ def calculate_performance(
     return {
         "date": current_date,
         "value": current_value,
-
         "Daily": pct_change(
             current_value,
             previous_value,
         ),
-
         "MTD": calculate_period_return(
             history,
             current_value,
             month_target,
         ),
-
         "YTD": calculate_period_return(
             history,
             current_value,
             year_target,
         ),
-
-        "1Y累積": calculate_period_return(
-            history,
-            current_value,
-            (
+        "1Y累積": (
+            calculate_period_return(
+                history,
+                current_value,
                 current_date
-                - pd.DateOffset(years=1)
-            ),
+                - pd.DateOffset(
+                    years=1
+                ),
+            )
         ),
-
-        "2Y累積": calculate_period_return(
-            history,
-            current_value,
-            (
+        "2Y累積": (
+            calculate_period_return(
+                history,
+                current_value,
                 current_date
-                - pd.DateOffset(years=2)
-            ),
+                - pd.DateOffset(
+                    years=2
+                ),
+            )
         ),
-
-        "3Y累積": calculate_period_return(
-            history,
-            current_value,
-            (
+        "3Y累積": (
+            calculate_period_return(
+                history,
+                current_value,
                 current_date
-                - pd.DateOffset(years=3)
-            ),
+                - pd.DateOffset(
+                    years=3
+                ),
+            )
         ),
     }
 
 
 # ============================================================
-# 日期選擇
+# 期間篩選及風險計算
 # ============================================================
 
-selected_date = st.date_input(
-    "📅 選擇查詢日期",
-    value=date.today(),
-    max_value=date.today(),
-)
+def filter_period(
+    history,
+    selected_date,
+    period_name,
+):
+    """依選擇期間篩選歷史資料。"""
 
-st.caption(
-    "若查詢日期為假日或尚未公布資料，"
-    "系統會使用該日期以前最近一筆資料。"
-)
+    end_date = pd.Timestamp(
+        selected_date
+    )
+
+    offsets = {
+        "近30日": pd.DateOffset(
+            days=30
+        ),
+        "近3個月": pd.DateOffset(
+            months=3
+        ),
+        "近6個月": pd.DateOffset(
+            months=6
+        ),
+        "近1年": pd.DateOffset(
+            years=1
+        ),
+        "近2年": pd.DateOffset(
+            years=2
+        ),
+        "近3年": pd.DateOffset(
+            years=3
+        ),
+    }
+
+    if (
+        period_name
+        == "全部可用期間"
+    ):
+        return history[
+            history["date"]
+            <= end_date
+        ].copy()
+
+    start_date = (
+        end_date
+        - offsets[period_name]
+    )
+
+    return history[
+        (
+            history["date"]
+            >= start_date
+        )
+        & (
+            history["date"]
+            <= end_date
+        )
+    ].copy()
+
+
+def calculate_risk_metrics(
+    history,
+    annual_risk_free_rate,
+):
+    """
+    計算：
+    年化報酬率、波動率、
+    最大回撤及Sharpe Ratio。
+    """
+
+    history = normalize_history(
+        history
+    )
+
+    daily_returns = (
+        history["nav"]
+        .pct_change()
+        .replace(
+            [
+                np.inf,
+                -np.inf,
+            ],
+            np.nan,
+        )
+        .dropna()
+    )
+
+    if (
+        len(daily_returns)
+        < MIN_RISK_OBSERVATIONS
+    ):
+        return None
+
+    observation_years = (
+        len(daily_returns)
+        / 252
+    )
+
+    total_return = (
+        history.iloc[-1]["nav"]
+        / history.iloc[0]["nav"]
+        - 1
+    )
+
+    if (
+        observation_years > 0
+        and 1 + total_return > 0
+    ):
+        annual_return = (
+            (1 + total_return)
+            ** (
+                1
+                / observation_years
+            )
+            - 1
+        )
+
+    else:
+        annual_return = np.nan
+
+    annual_volatility = (
+        daily_returns.std(ddof=1)
+        * np.sqrt(252)
+    )
+
+    running_max = (
+        history["nav"]
+        .cummax()
+    )
+
+    drawdown = (
+        history["nav"]
+        / running_max
+        - 1
+    )
+
+    maximum_drawdown = (
+        drawdown.min()
+    )
+
+    if annual_volatility > 0:
+        sharpe_ratio = (
+            annual_return
+            - annual_risk_free_rate
+        ) / annual_volatility
+
+    else:
+        sharpe_ratio = np.nan
+
+    return {
+        "年化報酬率": (
+            annual_return * 100
+        ),
+        "年化波動率": (
+            annual_volatility * 100
+        ),
+        "最大回撤": (
+            maximum_drawdown * 100
+        ),
+        "Sharpe Ratio": (
+            sharpe_ratio
+        ),
+        "資料筆數": len(history),
+    }
+
+
+# ============================================================
+# 側邊選單
+# ============================================================
+
+with st.sidebar:
+
+    st.title("📊 分析選單")
+
+    page = st.radio(
+        "選擇頁面",
+        [
+            "📋 績效總覽",
+            "📈 走勢分析",
+            "⚖️ 風險分析",
+            "🔧 資料狀態",
+        ],
+    )
+
+    selected_date = st.date_input(
+        "查詢日期",
+        value=date.today(),
+        max_value=date.today(),
+    )
+
+    chart_period = st.selectbox(
+        "走勢分析期間",
+        [
+            "近30日",
+            "近3個月",
+            "近6個月",
+            "近1年",
+            "近2年",
+            "近3年",
+            "全部可用期間",
+        ],
+        index=3,
+    )
+
+    risk_period = st.selectbox(
+        "風險分析期間",
+        [
+            "近1年",
+            "近2年",
+            "近3年",
+            "全部可用期間",
+        ],
+        index=0,
+    )
+
+    risk_free_rate_pct = (
+        st.number_input(
+            "無風險利率（年化%）",
+            min_value=0.0,
+            max_value=10.0,
+            value=(
+                DEFAULT_RISK_FREE_RATE
+            ),
+            step=0.1,
+        )
+    )
+
+    st.divider()
+
+    st.info(
+        "下次預計更新："
+        f"{scheduled_update_text()}"
+        "（台灣時間）"
+    )
+
+    st.caption(
+        "GitHub Actions於工作日"
+        "19:00及21:30排程，"
+        "實際啟動可能延遲數分鐘。"
+    )
+
+
+# ============================================================
+# 載入CSV
+# ============================================================
+
+(
+    local_fund_data,
+    csv_quality,
+) = inspect_and_load_fund_csv()
 
 
 # ============================================================
@@ -1239,8 +1726,12 @@ st.caption(
 results = []
 histories = {}
 diagnostics = []
+status_rows = []
 
-progress_bar = st.progress(0)
+progress_bar = st.progress(
+    0,
+    text="正在取得與整理資料…",
+)
 
 product_items = list(
     PRODUCTS.items()
@@ -1264,27 +1755,29 @@ for index, (
         )
 
         product_type_text = "ETF"
-
-        calculation_basis = (
-            "市場收盤價"
-        )
-
         data_source = "TWSE"
 
     else:
 
-        local_history = get_local_history(
-            product_code,
-            product_info["name"],
+        local_history = (
+            get_local_history(
+                product_code,
+                product_info["name"],
+                local_fund_data,
+            )
         )
 
         (
             online_history,
             fetch_errors,
             successful_urls,
-        ) = fetch_online_fund_history(
-            tuple(
-                product_info["urls"]
+        ) = (
+            fetch_online_fund_history(
+                tuple(
+                    product_info[
+                        "urls"
+                    ]
+                )
             )
         )
 
@@ -1295,10 +1788,6 @@ for index, (
 
         product_type_text = (
             "共同基金"
-        )
-
-        calculation_basis = (
-            "正式 NAV"
         )
 
         if (
@@ -1325,7 +1814,9 @@ for index, (
         diagnostics.append(
             {
                 "name": (
-                    product_info["name"]
+                    product_info[
+                        "name"
+                    ]
                 ),
                 "online_rows": len(
                     online_history
@@ -1356,6 +1847,10 @@ for index, (
             }
         )
 
+    history = normalize_history(
+        history
+    )
+
     history = history[
         history["date"]
         <= pd.Timestamp(
@@ -1378,14 +1873,11 @@ for index, (
         "商品名稱": (
             product_info["name"]
         ),
-        "商品類型": (
+        "類型": (
             product_type_text
         ),
         "資料日期": "-",
         "價格／淨值": np.nan,
-        "計算基準": (
-            calculation_basis
-        ),
         "Daily": np.nan,
         "MTD": np.nan,
         "YTD": np.nan,
@@ -1395,7 +1887,7 @@ for index, (
         "資料來源": data_source,
     }
 
-    if performance is not None:
+    if performance:
 
         result_row.update(
             {
@@ -1408,24 +1900,15 @@ for index, (
                 "價格／淨值": (
                     performance["value"]
                 ),
-                "Daily": (
-                    performance["Daily"]
-                ),
-                "MTD": (
-                    performance["MTD"]
-                ),
-                "YTD": (
-                    performance["YTD"]
-                ),
-                "1Y累積": (
-                    performance["1Y累積"]
-                ),
-                "2Y累積": (
-                    performance["2Y累積"]
-                ),
-                "3Y累積": (
-                    performance["3Y累積"]
-                ),
+                **{
+                    column: (
+                        performance[
+                            column
+                        ]
+                    )
+                    for column
+                    in PERIOD_COLUMNS
+                },
             }
         )
 
@@ -1433,9 +1916,68 @@ for index, (
         result_row
     )
 
+    if history.empty:
+
+        status_text = "無資料"
+        latest_date = None
+
+    else:
+
+        latest_date = (
+            history["date"].max()
+        )
+
+        age_days = (
+            pd.Timestamp(
+                selected_date
+            )
+            - latest_date
+        ).days
+
+        if age_days <= 3:
+            status_text = "正常"
+        else:
+            status_text = (
+                "資料較舊"
+            )
+
+    status_rows.append(
+        {
+            "商品名稱": (
+                product_info["name"]
+            ),
+            "類型": (
+                product_type_text
+            ),
+            "最新資料日期": (
+                latest_date.strftime(
+                    "%Y/%m/%d"
+                )
+                if latest_date
+                is not None
+                else "-"
+            ),
+            "資料筆數": len(
+                history
+            ),
+            "資料來源": (
+                data_source
+            ),
+            "資料狀態": (
+                status_text
+            ),
+        }
+    )
+
     progress_bar.progress(
-        (index + 1)
-        / len(product_items)
+        (
+            index + 1
+        )
+        / len(product_items),
+        text=(
+            "正在處理 "
+            f"{product_info['name']}…"
+        ),
     )
 
 progress_bar.empty()
@@ -1444,196 +1986,233 @@ result_df = pd.DataFrame(
     results
 )
 
-
-# ============================================================
-# 摘要資訊
-# ============================================================
-
-metric_col1, metric_col2, metric_col3 = (
-    st.columns(3)
+status_df = pd.DataFrame(
+    status_rows
 )
 
-with metric_col1:
 
-    st.metric(
-        "查詢日期",
-        pd.Timestamp(
-            selected_date
-        ).strftime("%Y/%m/%d"),
+# ============================================================
+# 共用頁首
+# ============================================================
+
+st.title(
+    "📊 ETF及共同基金績效比較"
+)
+
+st.caption(
+    "ETF採分割調整後市場收盤價，"
+    "共同基金採正式NAV；"
+    "各期間均為未含配息的"
+    "累積報酬率。"
+)
+
+
+valid_dates = pd.to_datetime(
+    result_df.loc[
+        result_df["資料日期"]
+        != "-",
+        "資料日期",
+    ],
+    errors="coerce",
+).dropna()
+
+if valid_dates.empty:
+    latest_date_text = "-"
+
+else:
+    latest_date_text = (
+        valid_dates.max()
+        .strftime("%Y/%m/%d")
     )
 
-with metric_col2:
 
-    valid_dates = pd.to_datetime(
-        result_df.loc[
-            result_df["資料日期"]
-            != "-",
-            "資料日期",
-        ],
-        errors="coerce",
-    ).dropna()
+metric_col1, metric_col2, \
+metric_col3, metric_col4 = (
+    st.columns(4)
+)
 
-    if valid_dates.empty:
-        latest_date_text = "-"
-    else:
-        latest_date_text = (
-            valid_dates
-            .max()
-            .strftime("%Y/%m/%d")
-        )
+metric_col1.metric(
+    "查詢日期",
+    pd.Timestamp(
+        selected_date
+    ).strftime("%Y/%m/%d"),
+)
 
-    st.metric(
-        "目前最新資料日期",
-        latest_date_text,
-    )
+metric_col2.metric(
+    "全體最新資料日",
+    latest_date_text,
+    help=(
+        "所有商品中最新的一個"
+        "資料日期。個別商品日期"
+        "請以表格為準。"
+    ),
+)
 
-with metric_col3:
+metric_col3.metric(
+    "比較商品數",
+    len(result_df),
+)
 
-    st.metric(
-        "比較商品數",
-        len(result_df),
-    )
+metric_col4.metric(
+    "下次預計更新",
+    scheduled_update_text(),
+)
 
 
 # ============================================================
-# 績效表格
+# 頁面1：績效總覽
 # ============================================================
 
-st.subheader("📈 績效比較")
+if page == "📋 績效總覽":
 
-display_df = result_df.copy()
+    st.subheader(
+        "📋 績效總覽"
+    )
 
-display_df[
-    "價格／淨值"
-] = (
+    display_df = (
+        result_df.copy()
+    )
+
+    download_df = (
+        result_df.copy()
+    )
+
     display_df[
         "價格／淨值"
-    ]
-    .apply(format_number)
-)
-
-for column in PERIOD_COLUMNS:
-
-    display_df[column] = (
-        display_df[column]
-        .apply(format_pct)
-    )
-
-display_columns = [
-    "商品名稱",
-    "商品類型",
-    "資料日期",
-    "價格／淨值",
-    "Daily",
-    "MTD",
-    "YTD",
-    "1Y累積",
-    "2Y累積",
-    "3Y累積",
-    "資料來源",
-]
-
-display_df = display_df[
-    display_columns
-]
-
-styled_df = display_df.style.map(
-    performance_color,
-    subset=PERIOD_COLUMNS,
-)
-
-st.dataframe(
-    styled_df,
-    use_container_width=True,
-    hide_index=True,
-)
-
-st.info(
-    "計算基準：ETF 採分割調整後的市場收盤價，"
-    "共同基金採正式 NAV。"
-    "Daily、MTD、YTD、1Y累積、2Y累積及3Y累積"
-    "均為未含配息的累積報酬率；"
-    "2Y累積與3Y累積並非年化報酬率。"
-    )
-
-missing_products = result_df[
-    result_df["資料來源"]
-    == "無可用資料"
-]["商品名稱"].tolist()
-
-if missing_products:
-
-    st.warning(
-        "目前無法取得可使用資料："
-        + "、".join(
-            missing_products
-        )
-    )
-
-
-# ============================================================
-# 圖表期間
-# ============================================================
-
-st.divider()
-
-st.subheader(
-    "📉 價格／淨值走勢"
-)
-
-chart_range = st.selectbox(
-    "圖表期間",
-    [
-        "近30日",
-        "近3個月",
-        "近6個月",
-        "近1年",
-        "全部可用資料",
-    ],
-    index=1,
-)
-
-days_map = {
-    "近30日": 30,
-    "近3個月": 92,
-    "近6個月": 184,
-    "近1年": 366,
-}
-
-if chart_range == "全部可用資料":
-    chart_start_date = None
-else:
-    chart_start_date = (
-        pd.Timestamp(selected_date)
-        - timedelta(
-            days=days_map[
-                chart_range
-            ]
-        )
-    )
-
-
-# ============================================================
-# 原始價格／淨值走勢
-# ============================================================
-
-chart_frames = []
-
-for (
-    product_name,
-    history,
-) in histories.items():
-
-    chart_data = history.copy()
-
-    if chart_start_date is not None:
-
-        chart_data = chart_data[
-            chart_data["date"]
-            >= chart_start_date
+    ] = (
+        display_df[
+            "價格／淨值"
         ]
+        .apply(format_number)
+    )
 
-    if not chart_data.empty:
+    for column in PERIOD_COLUMNS:
+
+        display_df[column] = (
+            display_df[column]
+            .apply(format_pct)
+        )
+
+    display_columns = [
+        "商品名稱",
+        "類型",
+        "資料日期",
+        "價格／淨值",
+        "Daily",
+        "MTD",
+        "YTD",
+        "1Y累積",
+        "2Y累積",
+        "3Y累積",
+        "資料來源",
+    ]
+
+    styled_df = (
+        display_df[
+            display_columns
+        ]
+        .style.map(
+            performance_color,
+            subset=PERIOD_COLUMNS,
+        )
+        .set_properties(
+            subset=[
+                "類型",
+                "資料日期",
+                "價格／淨值",
+                *PERIOD_COLUMNS,
+            ],
+            **{
+                "text-align": (
+                    "center"
+                ),
+            },
+        )
+    )
+
+    st.dataframe(
+        styled_df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.caption(
+        "註：Daily、MTD、YTD、"
+        "1Y累積、2Y累積及3Y累積"
+        "皆為未含配息的累積報酬率；"
+        "2Y累積與3Y累積"
+        "並非年化報酬率。"
+    )
+
+    csv_bytes = (
+        download_df.to_csv(
+            index=False,
+            encoding="utf-8-sig",
+        )
+        .encode("utf-8-sig")
+    )
+
+    st.download_button(
+        "⬇️ 下載績效表 CSV",
+        data=csv_bytes,
+        file_name=(
+            "performance_"
+            f"{pd.Timestamp(selected_date):%Y%m%d}"
+            ".csv"
+        ),
+        mime="text/csv",
+    )
+
+    missing_products = result_df[
+        result_df["資料來源"]
+        == "無可用資料"
+    ]["商品名稱"].tolist()
+
+    if missing_products:
+
+        st.warning(
+            "目前無法取得可使用資料："
+            + "、".join(
+                missing_products
+            )
+        )
+
+
+# ============================================================
+# 頁面2：走勢分析
+# ============================================================
+
+elif page == "📈 走勢分析":
+
+    st.subheader(
+        "📈 走勢分析"
+    )
+
+    st.caption(
+        f"目前期間：{chart_period}"
+    )
+
+    chart_frames = []
+    normalized_frames = []
+    interval_rows = []
+
+    for (
+        product_name,
+        history,
+    ) in histories.items():
+
+        sliced = filter_period(
+            history,
+            selected_date,
+            chart_period,
+        )
+
+        if sliced.empty:
+            continue
+
+        chart_data = (
+            sliced.copy()
+        )
 
         chart_data[
             "商品名稱"
@@ -1643,337 +2222,871 @@ for (
             chart_data
         )
 
-if chart_frames:
-
-    chart_df = pd.concat(
-        chart_frames,
-        ignore_index=True,
-    )
-
-    line_chart = px.line(
-        chart_df,
-        x="date",
-        y="nav",
-        color="商品名稱",
-        markers=False,
-        labels={
-            "date": "日期",
-            "nav": "價格／淨值",
-            "商品名稱": "商品",
-        },
-    )
-
-    line_chart.update_layout(
-        hovermode="x unified",
-        legend_title_text="商品",
-        height=520,
-    )
-
-    st.plotly_chart(
-        line_chart,
-        use_container_width=True,
-    )
-
-    st.caption(
-        "原始價格／淨值尺度不同，"
-        "此圖適合查看各商品自身走勢，"
-        "不適合直接判斷跨商品績效高低。"
-    )
-
-else:
-
-    st.info(
-        "目前沒有可繪製的歷史資料。"
-    )
-
-
-# ============================================================
-# 各期間累積報酬比較
-# ============================================================
-
-st.subheader(
-    "📊 各期間累積報酬比較"
-)
-
-performance_long = result_df.melt(
-    id_vars=["商品名稱"],
-    value_vars=PERIOD_COLUMNS,
-    var_name="期間",
-    value_name="報酬率",
-)
-
-performance_long = (
-    performance_long
-    .dropna(
-        subset=["報酬率"]
-    )
-)
-
-if not performance_long.empty:
-
-    bar_chart = px.bar(
-        performance_long,
-        x="期間",
-        y="報酬率",
-        color="商品名稱",
-        barmode="group",
-        text_auto=".2f",
-        labels={
-            "報酬率": "累積報酬率 (%)",
-            "商品名稱": "商品",
-        },
-    )
-
-    bar_chart.add_hline(
-        y=0,
-        line_width=1,
-        line_color="gray",
-    )
-
-    bar_chart.update_layout(
-        height=520,
-        legend_title_text="商品",
-    )
-
-    st.plotly_chart(
-        bar_chart,
-        use_container_width=True,
-    )
-
-else:
-
-    st.info(
-        "目前沒有足夠資料繪製績效比較圖。"
-    )
-
-
-# ============================================================
-# 標準化走勢圖
-# ============================================================
-
-st.subheader(
-    "📐 標準化績效走勢（起點 = 100）"
-)
-
-normalized_frames = []
-
-for (
-    product_name,
-    history,
-) in histories.items():
-
-    normalized_data = (
-        history.copy()
-    )
-
-    if chart_start_date is not None:
-
-        normalized_data = (
-            normalized_data[
-                normalized_data["date"]
-                >= chart_start_date
-            ]
+        first_value = (
+            sliced.iloc[0]["nav"]
         )
 
-    if normalized_data.empty:
-        continue
+        last_value = (
+            sliced.iloc[-1]["nav"]
+        )
 
-    first_value = (
-        normalized_data
-        .iloc[0]["nav"]
+        if first_value > 0:
+
+            normalized_data = (
+                sliced.copy()
+            )
+
+            normalized_data[
+                "標準化指數"
+            ] = (
+                normalized_data["nav"]
+                / first_value
+                * 100
+            )
+
+            normalized_data[
+                "商品名稱"
+            ] = product_name
+
+            normalized_frames.append(
+                normalized_data
+            )
+
+            interval_rows.append(
+                {
+                    "商品名稱": (
+                        product_name
+                    ),
+                    "區間累積報酬率": (
+                        (
+                            last_value
+                            / first_value
+                            - 1
+                        )
+                        * 100
+                    ),
+                }
+            )
+
+    st.markdown(
+        "#### 價格／淨值走勢"
     )
 
-    if (
-        pd.isna(first_value)
-        or first_value == 0
-    ):
-        continue
+    if chart_frames:
 
-    normalized_data[
-        "標準化指數"
-    ] = (
-        normalized_data["nav"]
-        / first_value
-        * 100
+        chart_df = pd.concat(
+            chart_frames,
+            ignore_index=True,
+        )
+
+        price_figure = px.line(
+            chart_df,
+            x="date",
+            y="nav",
+            color="商品名稱",
+            labels={
+                "date": "日期",
+                "nav": "價格／淨值",
+                "商品名稱": "商品",
+            },
+        )
+
+        price_figure.update_layout(
+            hovermode="x unified",
+            height=520,
+        )
+
+        st.plotly_chart(
+            price_figure,
+            use_container_width=True,
+        )
+
+        st.caption(
+            "原始尺度不同，"
+            "此圖適合查看各商品本身的"
+            "價格或淨值走勢。"
+        )
+
+    else:
+
+        st.info(
+            "目前期間沒有可繪製資料。"
+        )
+
+    st.markdown(
+        "#### 區間累積報酬比較"
     )
 
-    normalized_data[
-        "商品名稱"
-    ] = product_name
+    if interval_rows:
 
-    normalized_frames.append(
-        normalized_data
-    )
+        interval_df = pd.DataFrame(
+            interval_rows
+        )
 
-if normalized_frames:
+        interval_df = (
+            interval_df.sort_values(
+                "區間累積報酬率",
+                ascending=False,
+            )
+        )
 
-    normalized_df = pd.concat(
-        normalized_frames,
-        ignore_index=True,
-    )
-
-    normalized_chart = px.line(
-        normalized_df,
-        x="date",
-        y="標準化指數",
-        color="商品名稱",
-        labels={
-            "date": "日期",
-            "標準化指數": (
-                "起點 = 100"
+        interval_figure = px.bar(
+            interval_df,
+            x="商品名稱",
+            y="區間累積報酬率",
+            color="區間累積報酬率",
+            color_continuous_scale=(
+                "RdYlGn"
             ),
-            "商品名稱": "商品",
-        },
+            text_auto=".2f",
+            labels={
+                "區間累積報酬率": (
+                    "累積報酬率 (%)"
+                ),
+            },
+        )
+
+        interval_figure.update_layout(
+            height=480,
+            coloraxis_showscale=False,
+        )
+
+        st.plotly_chart(
+            interval_figure,
+            use_container_width=True,
+        )
+
+    else:
+
+        st.info(
+            "目前期間沒有足夠資料"
+            "計算區間報酬。"
+        )
+
+    st.markdown(
+        "#### 標準化績效走勢"
+        "（起點 = 100）"
     )
 
-    normalized_chart.add_hline(
-        y=100,
-        line_dash="dash",
-        line_color="gray",
-    )
+    if normalized_frames:
 
-    normalized_chart.update_layout(
-        hovermode="x unified",
-        height=520,
-        legend_title_text="商品",
-    )
+        normalized_df = pd.concat(
+            normalized_frames,
+            ignore_index=True,
+        )
 
-    st.plotly_chart(
-        normalized_chart,
-        use_container_width=True,
+        normalized_figure = px.line(
+            normalized_df,
+            x="date",
+            y="標準化指數",
+            color="商品名稱",
+            labels={
+                "date": "日期",
+                "標準化指數": (
+                    "起點 = 100"
+                ),
+                "商品名稱": "商品",
+            },
+        )
+
+        normalized_figure.add_hline(
+            y=100,
+            line_dash="dash",
+            line_color="gray",
+        )
+
+        normalized_figure.update_layout(
+            hovermode="x unified",
+            height=520,
+        )
+
+        st.plotly_chart(
+            normalized_figure,
+            use_container_width=True,
+        )
+
+        st.caption(
+            "各商品第一筆資料設為100，"
+            "適合比較不同價格尺度商品的"
+            "相對績效。"
+        )
+
+    else:
+
+        st.info(
+            "目前期間沒有足夠資料"
+            "建立標準化走勢。"
+        )
+
+
+# ============================================================
+# 頁面3：風險分析
+# ============================================================
+
+elif page == "⚖️ 風險分析":
+
+    st.subheader(
+        "⚖️ 風險與風險調整績效"
     )
 
     st.caption(
-        "標準化圖將各商品在所選期間的第一筆資料設為100，"
-        "較適合比較不同價格尺度商品的相對績效。"
+        f"分析期間：{risk_period}；"
+        "無風險利率："
+        f"{risk_free_rate_pct:.1f}%；"
+        "至少需要"
+        f"{MIN_RISK_OBSERVATIONS}"
+        "筆每日資料。"
     )
 
-else:
+    risk_rows = []
+    correlation_series = {}
 
-    st.info(
-        "目前沒有可繪製的標準化走勢資料。"
-    )
+    for (
+        product_name,
+        history,
+    ) in histories.items():
 
+        sliced = filter_period(
+            history,
+            selected_date,
+            risk_period,
+        )
 
-# ============================================================
-# 資料抓取診斷
-# ============================================================
+        metrics = (
+            calculate_risk_metrics(
+                sliced,
+                risk_free_rate_pct
+                / 100,
+            )
+        )
 
-with st.expander(
-    "🔧 共同基金資料診斷"
-):
+        if metrics:
 
-    for item in diagnostics:
+            risk_rows.append(
+                {
+                    "商品名稱": (
+                        product_name
+                    ),
+                    **metrics,
+                }
+            )
+
+            series = (
+                sliced.set_index(
+                    "date"
+                )["nav"]
+                .pct_change()
+                .rename(product_name)
+            )
+
+            correlation_series[
+                product_name
+            ] = series
+
+    if not risk_rows:
+
+        st.info(
+            "目前沒有商品具備足夠資料"
+            "計算風險指標。"
+        )
+
+    else:
+
+        risk_df = pd.DataFrame(
+            risk_rows
+        )
 
         st.markdown(
-            f"**{item['name']}**"
+            "#### 風險報酬散點圖"
         )
 
-        st.write(
-            f"線上取得 "
-            f"{item['online_rows']} 筆；"
-            f"CSV 取得 "
-            f"{item['csv_rows']} 筆。"
+        risk_return_figure = (
+            px.scatter(
+                risk_df,
+                x="年化波動率",
+                y="年化報酬率",
+                text="商品名稱",
+                size="資料筆數",
+                color="Sharpe Ratio",
+                color_continuous_scale=(
+                    "RdYlGn"
+                ),
+                labels={
+                    "年化波動率": (
+                        "年化波動率 (%)"
+                    ),
+                    "年化報酬率": (
+                        "年化報酬率 (%)"
+                    ),
+                },
+            )
+        )
+
+        risk_return_figure.update_traces(
+            textposition="top center"
+        )
+
+        risk_return_figure.update_layout(
+            height=550
+        )
+
+        st.plotly_chart(
+            risk_return_figure,
+            use_container_width=True,
+        )
+
+        risk_col1, risk_col2 = (
+            st.columns(2)
+        )
+
+        with risk_col1:
+
+            st.markdown(
+                "#### 最大回撤"
+            )
+
+            drawdown_figure = px.bar(
+                risk_df.sort_values(
+                    "最大回撤"
+                ),
+                x="最大回撤",
+                y="商品名稱",
+                orientation="h",
+                text_auto=".2f",
+                labels={
+                    "最大回撤": (
+                        "最大回撤 (%)"
+                    ),
+                },
+                color_discrete_sequence=[
+                    "#d95f59"
+                ],
+            )
+
+            drawdown_figure.update_layout(
+                height=430
+            )
+
+            st.plotly_chart(
+                drawdown_figure,
+                use_container_width=True,
+            )
+
+        with risk_col2:
+
+            st.markdown(
+                "#### 年化波動率"
+            )
+
+            volatility_figure = px.bar(
+                risk_df.sort_values(
+                    "年化波動率"
+                ),
+                x="年化波動率",
+                y="商品名稱",
+                orientation="h",
+                text_auto=".2f",
+                labels={
+                    "年化波動率": (
+                        "年化波動率 (%)"
+                    ),
+                },
+                color_discrete_sequence=[
+                    "#4c78a8"
+                ],
+            )
+
+            volatility_figure.update_layout(
+                height=430
+            )
+
+            st.plotly_chart(
+                volatility_figure,
+                use_container_width=True,
+            )
+
+        st.markdown(
+            "#### Sharpe Ratio"
+        )
+
+        sharpe_figure = px.bar(
+            risk_df.sort_values(
+                "Sharpe Ratio",
+                ascending=False,
+            ),
+            x="商品名稱",
+            y="Sharpe Ratio",
+            color="Sharpe Ratio",
+            color_continuous_scale=(
+                "RdYlGn"
+            ),
+            text_auto=".2f",
+        )
+
+        sharpe_figure.add_hline(
+            y=0,
+            line_color="gray",
+        )
+
+        sharpe_figure.update_layout(
+            height=470,
+            coloraxis_showscale=False,
+        )
+
+        st.plotly_chart(
+            sharpe_figure,
+            use_container_width=True,
+        )
+
+        st.markdown(
+            "#### 每日報酬相關係數矩陣"
         )
 
         if (
-            item["first_date"]
-            is not None
+            len(correlation_series)
+            >= 2
         ):
 
-            first_date_text = (
-                item["first_date"]
-                .strftime("%Y/%m/%d")
+            correlation_df = pd.concat(
+                correlation_series.values(),
+                axis=1,
+            ).corr(
+                min_periods=(
+                    MIN_RISK_OBSERVATIONS
+                )
             )
 
-            last_date_text = (
-                item["last_date"]
-                .strftime("%Y/%m/%d")
-            )
+            if (
+                correlation_df
+                .notna()
+                .sum()
+                .sum()
+                > 0
+            ):
 
-            st.write(
-                "線上資料期間："
-                f"{first_date_text} "
-                "至 "
-                f"{last_date_text}"
-            )
-
-        if item["successful_urls"]:
-
-            st.write(
-                "成功取得資料的來源："
-            )
-
-            for source_url in item[
-                "successful_urls"
-            ]:
-
-                st.code(
-                    source_url,
-                    language="text",
+                correlation_figure = (
+                    px.imshow(
+                        correlation_df,
+                        text_auto=".2f",
+                        zmin=-1,
+                        zmax=1,
+                        color_continuous_scale=(
+                            "RdBu_r"
+                        ),
+                        labels={
+                            "color": (
+                                "相關係數"
+                            ),
+                        },
+                    )
                 )
 
-        if item["errors"]:
+                correlation_figure.update_layout(
+                    height=600
+                )
 
-            if item["successful_urls"]:
-
-                st.caption(
-                    "部分備援來源無法連線或解析，"
-                    "但已有其他來源成功取得資料。"
+                st.plotly_chart(
+                    correlation_figure,
+                    use_container_width=True,
                 )
 
             else:
 
+                st.info(
+                    "共同有效日期不足，"
+                    "無法計算相關係數。"
+                )
+
+        else:
+
+            st.info(
+                "至少需要兩項商品具備"
+                "足夠資料才能計算相關係數。"
+            )
+
+        with st.expander(
+            "查看風險指標數據"
+        ):
+
+            display_risk = (
+                risk_df.copy()
+            )
+
+            for column in [
+                "年化報酬率",
+                "年化波動率",
+                "最大回撤",
+            ]:
+                display_risk[
+                    column
+                ] = (
+                    display_risk[column]
+                    .map(
+                        lambda value: (
+                            f"{value:.2f}%"
+                        )
+                    )
+                )
+
+            display_risk[
+                "Sharpe Ratio"
+            ] = (
+                display_risk[
+                    "Sharpe Ratio"
+                ]
+                .map(
+                    lambda value: (
+                        f"{value:.2f}"
+                    )
+                )
+            )
+
+            st.dataframe(
+                display_risk,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+
+# ============================================================
+# 頁面4：資料狀態
+# ============================================================
+
+else:
+
+    st.subheader(
+        "🔧 資料狀態"
+    )
+
+    st.dataframe(
+        status_df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.markdown(
+        "#### 🧪 資料品質檢核"
+    )
+
+    quality_rows = [
+        {
+            "檢核項目": (
+                "CSV檔案存在"
+            ),
+            "結果": (
+                "正常"
+                if csv_quality[
+                    "exists"
+                ]
+                else "異常"
+            ),
+            "說明": str(
+                LOCAL_FUND_FILE
+            ),
+        },
+        {
+            "檢核項目": (
+                "必要欄位"
+            ),
+            "結果": (
+                "正常"
+                if csv_quality[
+                    "columns_ok"
+                ]
+                else "異常"
+            ),
+            "說明": (
+                "date、code、"
+                "name、nav"
+            ),
+        },
+        {
+            "檢核項目": (
+                "無法解析日期"
+            ),
+            "結果": (
+                "正常"
+                if csv_quality[
+                    "invalid_dates"
+                ] == 0
+                else "提醒"
+            ),
+            "說明": (
+                f"{csv_quality['invalid_dates']}"
+                " 筆"
+            ),
+        },
+        {
+            "檢核項目": (
+                "無效淨值"
+            ),
+            "結果": (
+                "正常"
+                if csv_quality[
+                    "invalid_nav"
+                ] == 0
+                else "提醒"
+            ),
+            "說明": (
+                f"{csv_quality['invalid_nav']}"
+                " 筆"
+            ),
+        },
+        {
+            "檢核項目": (
+                "重複資料"
+            ),
+            "結果": (
+                "正常"
+                if csv_quality[
+                    "duplicate_rows"
+                ] == 0
+                else "提醒"
+            ),
+            "說明": (
+                f"{csv_quality['duplicate_rows']}"
+                " 筆"
+            ),
+        },
+        {
+            "檢核項目": (
+                "未知基金代碼"
+            ),
+            "結果": (
+                "正常"
+                if not
+                csv_quality[
+                    "unknown_codes"
+                ]
+                else "異常"
+            ),
+            "說明": (
+                "、".join(
+                    csv_quality[
+                        "unknown_codes"
+                    ]
+                )
+                or "無"
+            ),
+        },
+        {
+            "檢核項目": (
+                "基金代碼缺漏"
+            ),
+            "結果": (
+                "正常"
+                if not
+                csv_quality[
+                    "missing_codes"
+                ]
+                else "異常"
+            ),
+            "說明": (
+                "、".join(
+                    csv_quality[
+                        "missing_codes"
+                    ]
+                )
+                or "無"
+            ),
+        },
+    ]
+
+    quality_df = pd.DataFrame(
+        quality_rows
+    )
+
+    st.dataframe(
+        quality_df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    if any(
+        row["結果"] == "異常"
+        for row in quality_rows
+    ):
+
+        st.error(
+            "發現資料品質異常，"
+            "請查看檢核說明。"
+        )
+
+    elif any(
+        row["結果"] == "提醒"
+        for row in quality_rows
+    ):
+
+        st.warning(
+            "資料可使用，但有需要"
+            "留意的品質提醒。"
+        )
+
+    else:
+
+        st.success(
+            "資料品質檢核通過。"
+        )
+
+    st.markdown(
+        "#### 資料時間覆蓋與日期缺口"
+    )
+
+    coverage_rows = []
+
+    for (
+        product_name,
+        history,
+    ) in histories.items():
+
+        if history.empty:
+
+            coverage_rows.append(
+                {
+                    "商品名稱": (
+                        product_name
+                    ),
+                    "最早日期": "-",
+                    "最新日期": "-",
+                    "最大日期缺口": "-",
+                    "缺口提醒": (
+                        "無資料"
+                    ),
+                }
+            )
+
+            continue
+
+        date_gaps = (
+            history["date"]
+            .sort_values()
+            .diff()
+            .dt.days
+            .dropna()
+        )
+
+        if date_gaps.empty:
+            max_gap = 0
+
+        else:
+            max_gap = int(
+                date_gaps.max()
+            )
+
+        coverage_rows.append(
+            {
+                "商品名稱": (
+                    product_name
+                ),
+                "最早日期": (
+                    history["date"]
+                    .min()
+                    .strftime(
+                        "%Y/%m/%d"
+                    )
+                ),
+                "最新日期": (
+                    history["date"]
+                    .max()
+                    .strftime(
+                        "%Y/%m/%d"
+                    )
+                ),
+                "最大日期缺口": (
+                    f"{max_gap}天"
+                ),
+                "缺口提醒": (
+                    "提醒"
+                    if max_gap > 10
+                    else "正常"
+                ),
+            }
+        )
+
+    coverage_df = pd.DataFrame(
+        coverage_rows
+    )
+
+    st.dataframe(
+        coverage_df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    with st.expander(
+        "共同基金線上來源診斷"
+    ):
+
+        for item in diagnostics:
+
+            st.markdown(
+                f"**{item['name']}**"
+            )
+
+            st.write(
+                "線上取得 "
+                f"{item['online_rows']} 筆；"
+                "CSV取得 "
+                f"{item['csv_rows']} 筆。"
+            )
+
+            if (
+                item["first_date"]
+                is not None
+            ):
+
                 st.write(
-                    "所有線上來源皆無法取得："
+                    "線上期間："
+                    f"{item['first_date']:%Y/%m/%d}"
+                    " 至 "
+                    f"{item['last_date']:%Y/%m/%d}"
+                )
+
+            if item[
+                "successful_urls"
+            ]:
+
+                st.write(
+                    "成功來源："
+                )
+
+                for source_url in item[
+                    "successful_urls"
+                ]:
+                    st.code(
+                        source_url,
+                        language="text",
+                    )
+
+            if item["errors"]:
+
+                st.write(
+                    "來源錯誤或提醒："
                 )
 
                 for error_message in item[
                     "errors"
                 ]:
-
                     st.code(
                         error_message,
                         language="text",
                     )
 
+    with st.expander(
+        "計算口徑與限制"
+    ):
 
-# ============================================================
-# 計算說明
-# ============================================================
-
-with st.expander(
-    "ℹ️ 計算口徑與限制"
-):
-
-    st.markdown(
-        """
-### ETF
-
-- 使用臺灣證券交易所市場收盤價。
-- 0050 已調整 2025 年 6 月 18 日的 1 拆 4。
-- 尚未計入現金股利再投資，因此不是含息總報酬。
-
-### 共同基金
-
-- 使用基金公司或基金資訊頁面公布的正式 NAV。
-- 歷史資料由 `fund_nav_history.csv` 提供。
-- 線上近期資料與 CSV 同日期並存時，以線上資料優先。
-
-### 報酬率
-
-- **Daily**：目前值 ÷ 前一筆值 − 1
-- **MTD**：目前值 ÷ 上月底值 − 1
-- **YTD**：目前值 ÷ 去年底值 − 1
-- **1Y累積**：目前值 ÷ 一年前值 − 1
-- **2Y累積**：目前值 ÷ 兩年前值 − 1
-- **3Y累積**：目前值 ÷ 三年前值 − 1
-
-1Y、2Y、3Y 均為累積報酬率，不是年化報酬率。
-若基準日期以前最近一筆資料距離目標日期超過10天，
-系統將顯示「-」。
+        st.markdown(
+            """
+- ETF使用臺灣證券交易所市場收盤價，0050已調整2025年6月18日的1拆4。
+- 共同基金使用正式NAV，歷史資料由 `fund_nav_history.csv` 提供。
+- 線上近期資料與CSV同日期並存時，以線上資料優先。
+- Daily、MTD、YTD、1Y、2Y、3Y均為未含配息的累積報酬率。
+- 1Y、2Y、3Y不是年化報酬率。
+- 基準資料距目標日超過10天時，績效顯示「-」。
+- 風險指標至少需要60筆每日資料。
 """
-    )
+        )
 
 
 # ============================================================
