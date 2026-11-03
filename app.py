@@ -16,7 +16,7 @@ import streamlit as st
 
 
 # ============================================================
-# 頁面與共用設定
+# 頁面及商品設定
 # ============================================================
 
 st.set_page_config(
@@ -43,17 +43,6 @@ EXPECTED_FUND_CODES = {
     "A09012",
     "A41209",
 }
-
-REQUEST_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 "
-        "(Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 "
-        "Chrome/130.0.0.0 Safari/537.36"
-    ),
-    "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
-}
-
 
 PRODUCTS = {
     "00981A": {
@@ -107,6 +96,15 @@ PRODUCTS = {
     },
 }
 
+REQUEST_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 "
+        "(Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 "
+        "Chrome/130.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
+}
 
 ETF_SPLIT_CONFIG = {
     "0050": [
@@ -236,6 +234,7 @@ def parse_roc_or_ad_date(value):
             month=month,
             day=day,
         )
+
     except Exception:
         return pd.NaT
 
@@ -259,7 +258,7 @@ def calculate_return(
 
 
 # ============================================================
-# 表格格式
+# 表格顯示工具
 # ============================================================
 
 def format_number(value):
@@ -355,10 +354,8 @@ def automatic_column_width(
 
 
 def escape_html(value):
-    text = str(value)
-
     return (
-        text
+        str(value)
         .replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
@@ -398,7 +395,9 @@ def make_table_cell(
 # ============================================================
 
 def get_next_update_text():
-    now = datetime.now(TAIPEI_TZ)
+    now = datetime.now(
+        TAIPEI_TZ
+    )
 
     for day_offset in range(8):
         target_date = (
@@ -451,7 +450,7 @@ def get_next_update_text():
 
 
 # ============================================================
-# ETF資料抓取
+# ETF資料
 # ============================================================
 
 def adjust_etf_price(
@@ -508,16 +507,32 @@ def fetch_twse_month(
         "stockNo": stock_code,
     }
 
+    response = None
+
+    for attempt in range(3):
+        try:
+            response = requests.get(
+                url,
+                params=params,
+                headers=REQUEST_HEADERS,
+                timeout=45,
+            )
+
+            response.raise_for_status()
+            break
+
+        except requests.RequestException:
+            response = None
+
+            if attempt < 2:
+                time.sleep(
+                    2 * (attempt + 1)
+                )
+
+    if response is None:
+        return empty_history()
+
     try:
-        response = requests.get(
-            url,
-            params=params,
-            headers=REQUEST_HEADERS,
-            timeout=45,
-        )
-
-        response.raise_for_status()
-
         rows = response.json().get(
             "data",
             [],
@@ -684,7 +699,6 @@ def load_fund_csv():
                     "code": str,
                 },
             )
-
             break
 
         except Exception:
@@ -1149,7 +1163,7 @@ def merge_fund_histories(
 
 
 # ============================================================
-# 績效計算
+# 績效及風險計算
 # ============================================================
 
 def get_value_on_or_before(
@@ -1303,10 +1317,6 @@ def calculate_performance(
         ),
     }
 
-
-# ============================================================
-# 期間與風險計算
-# ============================================================
 
 def filter_period(
     history,
@@ -1525,7 +1535,7 @@ with st.sidebar:
 
 
 # ============================================================
-# 資料載入
+# 載入資料
 # ============================================================
 
 (
@@ -1787,35 +1797,11 @@ status_df = pd.DataFrame(
 
 
 # ============================================================
-# 置中標題及摘要
+# 靠左大標題及摘要
 # ============================================================
 
-st.markdown(
-    """
-    <h1 style="
-        text-align:center;
-        margin-top:0.2rem;
-        margin-bottom:0.3rem;
-    ">
-        📊 ETF及共同基金績效比較
-    </h1>
-    """,
-    unsafe_allow_html=True,
-)
-
-st.markdown(
-    """
-    <div style="
-        text-align:center;
-        color:#6b7280;
-        margin-bottom:1rem;
-    ">
-        ETF採分割調整後市場收盤價，
-        共同基金採正式NAV；
-        各期間均為未含配息的累積報酬率。
-    </div>
-    """,
-    unsafe_allow_html=True,
+st.title(
+    "📊 ETF及共同基金績效比較"
 )
 
 
@@ -1875,7 +1861,6 @@ if page == "📋 績效總覽":
 
     display_df = result_df.copy()
     download_df = result_df.copy()
-
     width_data = display_df.copy()
 
     width_data[
@@ -2172,7 +2157,11 @@ if page == "📋 績效總覽":
     )
 
     st.caption(
-        "註：各期間均為未含配息的累積報酬率"
+        "註：ETF採分割調整後市場收盤價，"
+        "共同基金採正式NAV；"
+        "Daily、MTD、YTD、1Y累積、2Y累積及3Y累積"
+        "均為未含配息的累積報酬率；"
+        "2Y累積與3Y累積並非年化報酬率。"
     )
 
     download_bytes = (
@@ -2682,48 +2671,6 @@ elif page == "⚖️ 風險分析":
             st.info(
                 "至少需要兩項商品具備"
                 "足夠資料才能計算相關係數。"
-            )
-
-        with st.expander(
-            "查看風險指標數據"
-        ):
-            display_risk_df = (
-                risk_df.copy()
-            )
-
-            for column in [
-                "年化報酬率",
-                "年化波動率",
-                "最大回撤",
-            ]:
-                display_risk_df[
-                    column
-                ] = (
-                    display_risk_df[
-                        column
-                    ].map(
-                        lambda value: (
-                            f"{value:.2f}%"
-                        )
-                    )
-                )
-
-            display_risk_df[
-                "Sharpe Ratio"
-            ] = (
-                display_risk_df[
-                    "Sharpe Ratio"
-                ].map(
-                    lambda value: (
-                        f"{value:.2f}"
-                    )
-                )
-            )
-
-            st.dataframe(
-                display_risk_df,
-                use_container_width=True,
-                hide_index=True,
             )
 
 
